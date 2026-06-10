@@ -9,7 +9,10 @@ from .cluster import auth_metadata, status_ok
 
 # Default retry policy for the replication-config read RPCs
 # (GetReplicateConfiguration / GetReplicateInfo). See call_with_retry below.
-RPC_RETRIES = 6
+# 10 tries: the per-attempt success rate of the hang-prone INDEPENDENT state
+# varies over time (observed anywhere from ~50% down to ~10%); a healthy
+# cluster answers attempt 1, so a generous budget costs nothing when it counts.
+RPC_RETRIES = 10
 RPC_TIMEOUT = 3.0
 
 

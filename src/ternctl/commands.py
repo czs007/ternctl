@@ -387,31 +387,46 @@ def do_topology(args):
     rpc_timeout = getattr(args, "rpc_timeout", None) or RPC_TIMEOUT
     rpc_tries = getattr(args, "rpc_retries", None) or RPC_RETRIES
 
-    views = {}  # cid -> {"edges": [(s,t)], "clusters": [...], "error": str|None}
-    for cl in resolved:
-        cid = cl.cluster_id
+    # Query all clusters IN PARALLEL (each may take up to tries×timeout when
+    # the hang bites), and print one progress line per cluster as it answers —
+    # so a slow run shows liveness instead of a silent stall.
+    import concurrent.futures
+
+    def _query_one(cl):
         # Fresh channel PER attempt: a call that deadlines out poisons its
         # HTTP/2 connection, so reusing one channel makes every retry fail too.
-        def _call(timeout, _cl=cl):
-            stub, ch = _cl.stub()
+        def _call(timeout):
+            stub, ch = cl.stub()
             try:
                 return stub.GetReplicateConfiguration(
                     milvus_pb2.GetReplicateConfigurationRequest(),
-                    metadata=auth_metadata(_cl.token), timeout=timeout)
+                    metadata=auth_metadata(cl.token), timeout=timeout)
             finally:
                 ch.close()
+        t0 = time.time()
         try:
             resp = call_with_retry(_call, tries=rpc_tries, timeout=rpc_timeout)
             cfg = resp.configuration
-            views[cid] = {
+            view = {
                 "clusters": [x.cluster_id for x in cfg.clusters],
                 "edges": [(t.source_cluster_id, t.target_cluster_id)
                           for t in cfg.cross_cluster_topology],
                 "error": None,
             }
         except grpc.RpcError as e:
-            views[cid] = {"clusters": [], "edges": [],
-                          "error": e.code().name if hasattr(e, "code") else str(e)[:40]}
+            view = {"clusters": [], "edges": [],
+                    "error": e.code().name if hasattr(e, "code") else str(e)[:40]}
+        return cl.cluster_id, view, time.time() - t0
+
+    views = {}  # cid -> {"edges": [(s,t)], "clusters": [...], "error": str|None}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(resolved)) as ex:
+        futs = [ex.submit(_query_one, cl) for cl in resolved]
+        for fut in concurrent.futures.as_completed(futs):
+            cid, view, dt = fut.result()
+            views[cid] = view
+            state = "ok" if view["error"] is None else view["error"]
+            print(_dim(f"  · {cid} answered in {dt:.1f}s ({state})"), flush=True)
+    print()
 
     # Per-cluster role, derived from each cluster's OWN view.
     for cid, _ in specs:
