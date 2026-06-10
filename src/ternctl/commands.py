@@ -9,7 +9,7 @@ import grpc
 from pymilvus.grpc_gen import milvus_pb2
 
 from .output import (header, step, done, info, warn, kv, _green, _red, _yel, _cyan, _dim, _bold)
-from .cluster import pchannels_of, auth_metadata
+from .cluster import pchannels_of, auth_metadata, grpc_addr
 from .config import load_config, save_config, resolve_cluster, config_path
 from .replication import (build_replicate_config, apply_replicate_config,
                           independent_replicate_config, get_replicate_checkpoints, fetch_cdc_latency,
@@ -242,6 +242,53 @@ def do_status(args, upstream, downstream):
              "show real replication lag (e2e latency), or see Grafana's panel.")
 
 
+def _cluster_line(name, e):
+    """One formatted listing line for a config entry (shared by clusters / config list)."""
+    extras = []
+    if e.get("inter_uri"):   extras.append("inter=" + e["inter_uri"])
+    if e.get("cdc_metrics"): extras.append("cdc=" + e["cdc_metrics"])
+    if e.get("token"):       extras.append("token=set")
+    return (f"  {_cyan(name):18} {_dim('uri=')}{e.get('uri','?')}"
+            + ("  " + _dim(" ".join(extras)) if extras else ""))
+
+
+def _grpc_ready(addr, timeout=2.0):
+    """True if a plaintext gRPC channel to addr becomes READY within timeout.
+    Transport-level only (TCP + HTTP/2), so it is NOT affected by the
+    GetReplicateConfiguration hang on INDEPENDENT clusters — and fast."""
+    ch = grpc.insecure_channel(addr)
+    try:
+        grpc.channel_ready_future(ch).result(timeout=timeout)
+        return True
+    except Exception:
+        return False
+    finally:
+        ch.close()
+
+
+def do_clusters(args):
+    """List the clusters defined in the config file; --probe checks reachability."""
+    cfg = load_config(getattr(args, "config", None))
+    path = config_path(getattr(args, "config", None))
+    header("CLUSTERS", f"{len(cfg)} configured in {path}")
+    if not cfg:
+        info("no clusters yet. Add one: "
+             + _bold("ternctl config add <name> --uri http://...:19530"))
+        return
+    probe = getattr(args, "probe", False)
+    for name in sorted(cfg):
+        e = cfg[name]
+        line = _cluster_line(name, e)
+        if probe:
+            t0 = time.time()
+            ok = _grpc_ready(grpc_addr(e.get("uri", "")))
+            ms = (time.time() - t0) * 1000
+            line += "  " + (_green(f"✓ up {ms:.0f}ms") if ok else _red("✗ unreachable"))
+        print(line)
+    if not probe:
+        info("add " + _bold("--probe") + " to check gRPC reachability of each uri")
+
+
 def do_config(args):
     """Manage the cluster config file (~/.ternctl.yaml) — kubectl-config style."""
     cmd = args.config_command
@@ -255,13 +302,7 @@ def do_config(args):
                  + _bold("ternctl config add <name> --uri http://...:19530"))
             return
         for name in sorted(cfg):
-            e = cfg[name]
-            extras = []
-            if e.get("inter_uri"):   extras.append("inter=" + e["inter_uri"])
-            if e.get("cdc_metrics"): extras.append("cdc=" + e["cdc_metrics"])
-            if e.get("token"):       extras.append("token=set")
-            print(f"  {_cyan(name):18} {_dim('uri=')}{e.get('uri','?')}"
-                  + ("  " + _dim(" ".join(extras)) if extras else ""))
+            print(_cluster_line(name, cfg[name]))
         return
 
     if cmd == "show":

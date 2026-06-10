@@ -68,6 +68,7 @@ Every command takes clusters two ways:
 | `backup` | snapshot a single cluster via milvus-backup (e.g. before reinstalling it) |
 | `restore` | restore a backup into a standalone cluster (rollback / clone) |
 | `salvage` | recover the unforwarded WAL tail from Kafka after a force-promote |
+| `clusters` | list the clusters from `~/.ternctl.yaml` (`--probe` checks gRPC reachability) |
 | `config` | manage `~/.ternctl.yaml` (`add` / `list` / `show` / `remove`) |
 | `repl` | interactive shell — run subcommands without re-typing the launcher |
 

@@ -8,7 +8,7 @@ from .config import load_config, resolve_cluster
 from .verify import verify
 from .commands import (do_rebuild, do_switchover, do_force_promote, do_status,
                        do_config, do_topology, do_replicate_config, do_break_topology,
-                       do_backup, do_restore)
+                       do_backup, do_restore, do_clusters)
 from .salvage import do_salvage
 
 
@@ -191,6 +191,14 @@ def build_parser():
     rg.add_argument("--restore-index", action="store_true", help="also rebuild indexes")
     rg.add_argument("--restore-extra", nargs=argparse.REMAINDER, default=[])
 
+    p_clusters = sub.add_parser("clusters",
+                                help="list clusters from the config file (--probe checks reachability)")
+    p_clusters.add_argument("--probe", action="store_true",
+                            help="also probe each cluster's uri for gRPC reachability "
+                                 "(transport-level, ~2s timeout per cluster)")
+    p_clusters.add_argument("--config", default=None, metavar="PATH",
+                            help="config file path (default ~/.ternctl.yaml)")
+
     p_config = sub.add_parser("config", help="manage the cluster config file (~/.ternctl.yaml)")
     csub = p_config.add_subparsers(dest="config_command", required=True)
     c_add = csub.add_parser("add", help="add or update a cluster")
@@ -276,6 +284,10 @@ def run_command(args, parser):
             do_force_promote(args, target)
             return
 
+        if args.command == "clusters":
+            do_clusters(args)
+            return
+
         if args.command == "config":
             do_config(args)
             return
@@ -323,17 +335,98 @@ def _subparser_choices(parser):
     return {}
 
 
+# Flags whose VALUE is a cluster name from the config file.
+_CLUSTER_VALUE_FLAGS = {"--cluster", "--clusters", "--upstream", "--downstream", "--target"}
+
+
+def _completion_candidates(parser, buf):
+    """Pure completion logic for the REPL: given the line buffer up to the
+    cursor, return the candidate completions for the word being typed.
+    Kept readline-free so it can be unit-tested directly.
+
+    Layers:
+      1. first word            -> subcommand names (+ help / exit)
+      2. after `help`          -> subcommand names
+      3. after a subcommand    -> that subparser's --flags
+      4. after a cluster flag  -> cluster names from ~/.ternctl.yaml
+         (--clusters also completes each element of a comma-list)
+    """
+    choices = _subparser_choices(parser)
+    try:
+        toks = buf.split()
+    except Exception:
+        return []
+    at_new_word = buf.endswith(" ") or not buf
+    cur = "" if at_new_word else (toks[-1] if toks else "")
+    prev_toks = toks if at_new_word else toks[:-1]
+
+    def cluster_names():
+        try:
+            return sorted(load_config(None).keys())
+        except Exception:
+            return []
+
+    if not prev_toks:
+        cands = sorted(choices) + ["help", "exit"]
+    elif prev_toks[0] in ("help", "?", "h"):
+        cands = sorted(choices)
+    elif prev_toks[0] in choices:
+        prev = prev_toks[-1]
+        if prev in _CLUSTER_VALUE_FLAGS and not cur.startswith("-"):
+            names = cluster_names()
+            head, sep, tail = cur.rpartition(",")
+            if sep:  # completing an element of a comma-list: a,b,<TAB>
+                # No trailing space: the user may keep extending the list with ','.
+                used = set(head.split(","))
+                return [head + "," + n for n in names
+                        if n.startswith(tail) and n != tail and n not in used]
+            cands = names
+        elif prev_toks[0] == "config" and len(prev_toks) == 1:
+            cands = ["add", "list", "show", "remove"]
+        else:
+            sub = choices[prev_toks[0]]
+            cands = sorted({o for a in sub._actions for o in a.option_strings
+                            if o.startswith("--")})
+    else:
+        cands = []
+    # Trailing space: python readline can't set rl_completion_append_character,
+    # so bake the separator into the candidate (a fully-completed word is always
+    # followed by more input — a flag, a value, or another argument).
+    return [c + " " for c in cands if c.startswith(cur) and c != cur]
+
+
+def _make_completer(parser):
+    """readline completer closure over _completion_candidates."""
+    def complete(text, state):
+        try:
+            import readline
+            buf = readline.get_line_buffer()[:readline.get_endidx()]
+            matches = _completion_candidates(parser, buf)
+            return matches[state] if state < len(matches) else None
+        except Exception:
+            return None  # never let completion errors kill the REPL
+    return complete
+
+
 def run_repl(parser):
     """Interactive shell: run subcommands without re-typing the launcher each time.
-    Uses stdlib only — readline (if present) gives history + line editing."""
+    Uses stdlib only — readline (if present) gives history + line editing +
+    tab completion (subcommands, flags, cluster names from the config file)."""
     import shlex
     try:
-        import readline  # noqa: F401 — enables up-arrow history + line editing
+        import readline
+        # Words are space-separated only — keeps '--flag' and 'a,b,c' whole.
+        readline.set_completer_delims(" \t\n")
+        readline.set_completer(_make_completer(parser))
+        if "libedit" in (getattr(readline, "__doc__", "") or ""):
+            readline.parse_and_bind("bind ^I rl_complete")   # macOS libedit
+        else:
+            readline.parse_and_bind("tab: complete")
     except ImportError:
         pass
     print(f"\n{_bold(_cyan('ternctl interactive shell'))}")
     print(_dim("  run subcommands directly (status, topology, rebuild, config list, ...)"))
-    print(_dim("  'help' lists them · 'exit' or Ctrl-D quits\n"))
+    print(_dim("  TAB completes commands, flags and cluster names · 'help' lists commands · 'exit' or Ctrl-D quits\n"))
     while True:
         try:
             line = input("ternctl> ").strip()
