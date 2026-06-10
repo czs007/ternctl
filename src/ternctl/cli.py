@@ -202,6 +202,12 @@ def build_parser():
     add_common(p_repl)
     p_repl.add_argument("--direction", choices=["up2down", "down2up"], default="up2down")
     p_repl.add_argument("--target", choices=["upstream", "downstream", "both"], default="both")
+    p_repl.add_argument("--merge", action="store_true",
+                        help="merge the edge into the source's CURRENT topology "
+                             "instead of replacing it (UpdateReplicateConfiguration "
+                             "is full-state replacement — without --merge, applying "
+                             "to a primary that has other downstreams tears their "
+                             "edges down)")
 
     p_break = sub.add_parser("break-topology",
                              help="delete the replication edge between two clusters (cleanup/teardown)")

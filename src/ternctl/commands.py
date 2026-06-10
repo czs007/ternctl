@@ -670,7 +670,12 @@ def do_topology(args):
 
 def do_replicate_config(args, upstream, downstream):
     source, target = (upstream, downstream) if args.direction == "up2down" else (downstream, upstream)
-    config = build_replicate_config(upstream, downstream, source=source, target=target)
+    if getattr(args, "merge", False):
+        # Merge the edge into the SOURCE's current topology instead of
+        # replacing it — the repair/append tool for multi-downstream layouts.
+        config = merged_replicate_config(source, target)
+    else:
+        config = build_replicate_config(upstream, downstream, source=source, target=target)
     targets = {"upstream": [upstream], "downstream": [downstream], "both": [downstream, upstream]}[args.target]
     for cluster in targets:
         apply_replicate_config(cluster, config)
