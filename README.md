@@ -65,6 +65,9 @@ Every command takes clusters two ways:
 | `verify` | compare row counts across clusters (`--once` for a single snapshot) |
 | `break-topology` | delete a replication edge (teardown — not a pause) |
 | `replicate-config` | low-level: apply a replicate configuration directly |
+| `backup` | snapshot a single cluster via milvus-backup (e.g. before reinstalling it) |
+| `restore` | restore a backup into a standalone cluster (rollback / clone) |
+| `salvage` | recover the unforwarded WAL tail from Kafka after a force-promote |
 | `config` | manage `~/.ternctl.yaml` (`add` / `list` / `show` / `remove`) |
 | `repl` | interactive shell — run subcommands without re-typing the launcher |
 
