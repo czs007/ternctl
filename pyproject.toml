@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ternctl"
+version = "0.1.0"
+description = "Tern — Milvus cross-cluster replication & disaster-recovery CLI"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+keywords = ["milvus", "cdc", "replication", "disaster-recovery", "failover"]
+dependencies = [
+    "pymilvus>=2.6.0",   # provides the gRPC proto (pymilvus.grpc_gen) + MilvusClient
+    "pyyaml>=5.1",       # config file (~/.ternctl.yaml); imported lazily
+]
+
+[project.optional-dependencies]
+salvage = ["kafka-python>=2.0"]   # only for `salvage` (reads Kafka WAL directly)
+dev = ["pytest>=7", "ruff"]
+
+[project.scripts]
+ternctl = "ternctl.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/czs007/ternctl"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+# E701/E702: the tool uses intentional compact `step(...); done()` pairings.
+ignore = ["E701", "E702"]
