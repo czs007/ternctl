@@ -7,7 +7,8 @@ from .output import log, _red, _cyan, _bold, _dim
 from .config import load_config, resolve_cluster
 from .verify import verify
 from .commands import (do_rebuild, do_switchover, do_force_promote, do_status,
-                       do_config, do_topology, do_replicate_config, do_break_topology)
+                       do_config, do_topology, do_replicate_config, do_break_topology,
+                       do_backup)
 from .salvage import do_salvage
 
 
@@ -142,6 +143,21 @@ def build_parser():
                              help="delete the replication edge between two clusters (cleanup/teardown)")
     add_common(p_break)
 
+    p_backup = sub.add_parser("backup",
+                              help="snapshot a single cluster via milvus-backup (e.g. before reinstalling it)")
+    p_backup.add_argument("--cluster", required=True, metavar="NAME[=URI]",
+                          help="the cluster to back up (config NAME or NAME=URI)")
+    p_backup.add_argument("--config", default=None, metavar="PATH",
+                          help="ternctl config file (default ~/.ternctl.yaml)")
+    bg = p_backup.add_argument_group("milvus-backup")
+    bg.add_argument("--backup-bin", default="./milvus-backup")
+    bg.add_argument("--backup-workdir", default=".")
+    bg.add_argument("--backup-name", required=True, help="name for the backup")
+    bg.add_argument("--backup-config", required=True, metavar="PATH",
+                    help="milvus-backup config pointing at this cluster (its milvus / minio / etcd)")
+    bg.add_argument("--no-backup-index-extra", dest="backup_index_extra", action="store_false")
+    bg.add_argument("--backup-create-extra", nargs=argparse.REMAINDER, default=[])
+
     p_config = sub.add_parser("config", help="manage the cluster config file (~/.ternctl.yaml)")
     csub = p_config.add_subparsers(dest="config_command", required=True)
     c_add = csub.add_parser("add", help="add or update a cluster")
@@ -233,6 +249,10 @@ def run_command(args, parser):
 
         if args.command == "salvage":
             do_salvage(args)
+            return
+
+        if args.command == "backup":
+            do_backup(args)
             return
 
         if args.command == "topology":

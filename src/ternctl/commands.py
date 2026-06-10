@@ -37,6 +37,26 @@ def do_rebuild(args, upstream, downstream):
         info(f"writes flow {_cyan(upstream.cluster_id)} → {_cyan(downstream.cluster_id)} continuously via CDC")
 
 
+def do_backup(args):
+    """Snapshot a single cluster via milvus-backup — e.g. before reinstalling it.
+    milvus-backup reads etcd + object storage directly, so this works even when
+    the cluster's streaming layer is wedged (a stuck replication edge)."""
+    config = load_config(getattr(args, "config", None))
+    cluster = resolve_cluster("backup", args.cluster, config)
+    header("BACKUP",
+           f"cluster:  {_cyan(cluster.cluster_id)} ({cluster.uri})\n"
+           f"name:     {args.backup_name}\n"
+           "milvus-backup reads etcd + object storage — works even if the "
+           "cluster's streaming layer is wedged")
+    step("1/1", f"snapshot {cluster.cluster_id} via milvus-backup")
+    backup_create(args)
+    done()
+    header("DONE")
+    info(f"backup '{_bold(args.backup_name)}' created (workdir: {args.backup_workdir}).")
+    info(f"safe to reinstall {_cyan(cluster.cluster_id)} now — restore later with "
+         f"milvus-backup, or rebuild a fresh standby from the current primary.")
+
+
 def do_switchover(args, upstream, downstream):
     header("SWITCHOVER",
            f"current primary: {_cyan(upstream.cluster_id)} ({upstream.uri})\n"

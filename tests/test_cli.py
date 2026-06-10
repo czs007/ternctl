@@ -55,6 +55,15 @@ def test_salvage_parses():
     assert args.from_checkpoint_file == "cp.json"
 
 
+def test_backup_parses():
+    p = build_parser()
+    args = p.parse_args(["backup", "--cluster", "cluster-a",
+                         "--backup-name", "bk", "--backup-config", "backup-a.yaml"])
+    assert args.command == "backup"
+    assert args.cluster == "cluster-a"
+    assert args.backup_name == "bk"
+
+
 def test_subcommand_required():
     p = build_parser()
     with pytest.raises(SystemExit):
