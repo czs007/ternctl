@@ -1,4 +1,5 @@
-"""milvus-backup CLI integration (backup create / restore secondary)."""
+"""milvus-backup CLI integration (backup create / restore secondary / list)."""
+import json
 import os
 import subprocess
 
@@ -25,6 +26,48 @@ def run_backup(args, argv):
         if not output._VERBOSE:
             warn(f"see {os.path.join(args.backup_workdir, 'milvus-backup-cli.log')} for milvus-backup output")
         raise RuntimeError(f"milvus-backup exited with code {result.returncode}: {' '.join(argv)}")
+
+
+def run_backup_capture(args, argv):
+    """Run milvus-backup and CAPTURE its stdout — for commands whose output IS
+    the result (list / get), unlike run_backup which logs it away."""
+    cmd = [os.path.abspath(args.backup_bin)] + argv
+    result = subprocess.run(cmd, cwd=args.backup_workdir,
+                            capture_output=True, text=True)
+    if result.returncode != 0:
+        tail = ((result.stdout or "") + (result.stderr or ""))[-400:]
+        raise RuntimeError(
+            f"milvus-backup exited with code {result.returncode}: "
+            f"{' '.join(argv)}\n{tail}")
+    return result.stdout or ""
+
+
+def backup_list_names(args):
+    """Names of all backups in the archive of this --backup-config.
+    Parses the `>> Backups:` block that milvus-backup `list` prints after
+    its log lines."""
+    out = run_backup_capture(args, ["--config", args.backup_config, "list"])
+    names, in_block = [], False
+    for line in out.splitlines():
+        if in_block:
+            line = line.strip()
+            if line:
+                names.append(line)
+        elif line.strip().startswith(">> Backups"):
+            in_block = True
+    return names
+
+
+def backup_get_info(args, name):
+    """Parsed JSON from milvus-backup `get -n <name>` (None if unparsable)."""
+    out = run_backup_capture(args, ["--config", args.backup_config, "get", "-n", name])
+    i = out.find("{")
+    if i < 0:
+        return None
+    try:
+        return json.loads(out[i:])
+    except ValueError:
+        return None
 
 
 def backup_create(args):

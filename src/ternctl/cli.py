@@ -8,7 +8,7 @@ from .config import load_config, resolve_cluster
 from .verify import verify
 from .commands import (do_rebuild, do_switchover, do_force_promote, do_status,
                        do_config, do_topology, do_replicate_config, do_break_topology,
-                       do_backup, do_restore, do_clusters)
+                       do_backup, do_restore, do_clusters, do_backups)
 from .salvage import do_salvage
 
 
@@ -173,6 +173,16 @@ def build_parser():
     bg.add_argument("--no-backup-index-extra", dest="backup_index_extra", action="store_false")
     bg.add_argument("--backup-create-extra", nargs=argparse.REMAINDER, default=[])
 
+    p_backups = sub.add_parser("backups",
+                               help="list backups in a backup archive (milvus-backup list; --detail adds meta)")
+    p_backups.add_argument("--backup-bin", default="./milvus-backup")
+    p_backups.add_argument("--backup-workdir", default=".")
+    p_backups.add_argument("--backup-config", required=True, metavar="PATH",
+                           help="milvus-backup config whose archive bucket to list")
+    p_backups.add_argument("--detail", action="store_true",
+                           help="also read each backup's meta: size / milvus version / "
+                                "state / collections (one extra archive read per backup)")
+
     p_restore = sub.add_parser("restore",
                                help="restore a milvus-backup snapshot into an INDEPENDENT cluster (rollback / clone)")
     p_restore.add_argument("--cluster", required=True, metavar="NAME[=URI]",
@@ -302,6 +312,10 @@ def run_command(args, parser):
 
         if args.command == "restore":
             do_restore(args)
+            return
+
+        if args.command == "backups":
+            do_backups(args)
             return
 
         if args.command == "topology":

@@ -67,6 +67,7 @@ Every command takes clusters two ways:
 | `replicate-config` | low-level: apply a replicate configuration directly |
 | `backup` | snapshot a single cluster via milvus-backup (e.g. before reinstalling it) |
 | `restore` | restore a backup into a standalone cluster (rollback / clone) |
+| `backups` | list backups in an archive bucket (`--detail` adds size / version / collections) |
 | `salvage` | recover the unforwarded WAL tail from Kafka after a force-promote |
 | `clusters` | list the clusters from `~/.ternctl.yaml` (`--probe` checks gRPC reachability) |
 | `config` | manage `~/.ternctl.yaml` (`add` / `list` / `show` / `remove`) |

@@ -15,7 +15,8 @@ from .replication import (build_replicate_config, apply_replicate_config,
                           independent_replicate_config, get_replicate_checkpoints, fetch_cdc_latency,
                           prefetch_salvage_checkpoints, call_with_retry,
                           RPC_RETRIES, RPC_TIMEOUT)
-from .backup import backup_create, restore_secondary, restore_backup
+from .backup import (backup_create, restore_secondary, restore_backup,
+                     backup_list_names, backup_get_info)
 from .verify import verify
 
 
@@ -287,6 +288,34 @@ def do_clusters(args):
         print(line)
     if not probe:
         info("add " + _bold("--probe") + " to check gRPC reachability of each uri")
+
+
+def do_backups(args):
+    """List the backups in one backup-config's archive bucket.
+    --detail additionally reads each backup's meta (one `get` per backup)."""
+    header("BACKUPS",
+           f"archive of {_cyan(os.path.basename(args.backup_config))}")
+    names = backup_list_names(args)
+    if not names:
+        info("no backups found in this archive")
+        return
+    if not getattr(args, "detail", False):
+        for n in names:
+            print(f"  {_cyan(n)}")
+        info("add " + _bold("--detail") + " for size / milvus version / "
+             "collections (one extra read per backup)")
+        return
+    for n in names:
+        d = backup_get_info(args, n)
+        if not d:
+            print(f"  {_cyan(n):24} {_red('? could not read backup meta')}")
+            continue
+        cols = [c.get("collection_name", "?")
+                for c in d.get("collection_backups") or []]
+        print(f"  {_cyan(n):24} {_dim('size=')}{d.get('size', '?')}B"
+              f"  {_dim('milvus=')}{d.get('milvus_version', '?')}"
+              f"  {_dim('state=')}{d.get('state_code', '?')}"
+              f"  {_dim('collections=')}{','.join(cols) or '-'}")
 
 
 def do_config(args):
