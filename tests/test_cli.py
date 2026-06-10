@@ -64,6 +64,16 @@ def test_backup_parses():
     assert args.backup_name == "bk"
 
 
+def test_restore_parses():
+    p = build_parser()
+    args = p.parse_args(["restore", "--cluster", "cluster-c",
+                         "--backup-name", "bk", "--backup-config", "backup-c.yaml",
+                         "--restore-suffix", "_r"])
+    assert args.command == "restore"
+    assert args.cluster == "cluster-c"
+    assert args.restore_suffix == "_r"
+
+
 def test_subcommand_required():
     p = build_parser()
     with pytest.raises(SystemExit):

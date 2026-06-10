@@ -8,7 +8,7 @@ from .config import load_config, resolve_cluster
 from .verify import verify
 from .commands import (do_rebuild, do_switchover, do_force_promote, do_status,
                        do_config, do_topology, do_replicate_config, do_break_topology,
-                       do_backup)
+                       do_backup, do_restore)
 from .salvage import do_salvage
 
 
@@ -158,6 +158,24 @@ def build_parser():
     bg.add_argument("--no-backup-index-extra", dest="backup_index_extra", action="store_false")
     bg.add_argument("--backup-create-extra", nargs=argparse.REMAINDER, default=[])
 
+    p_restore = sub.add_parser("restore",
+                               help="restore a milvus-backup snapshot into a STANDALONE cluster (rollback / clone)")
+    p_restore.add_argument("--cluster", required=True, metavar="NAME[=URI]",
+                           help="the cluster to restore into (config NAME or NAME=URI)")
+    p_restore.add_argument("--config", default=None, metavar="PATH",
+                           help="ternctl config file (default ~/.ternctl.yaml)")
+    rg = p_restore.add_argument_group("milvus-backup")
+    rg.add_argument("--backup-bin", default="./milvus-backup")
+    rg.add_argument("--backup-workdir", default=".")
+    rg.add_argument("--backup-name", required=True, help="name of the backup to restore")
+    rg.add_argument("--backup-config", required=True, metavar="PATH",
+                    help="milvus-backup config pointing at the target cluster")
+    rg.add_argument("--restore-suffix", default=None, metavar="SUFFIX",
+                    help="restore into NEW collections named <original><suffix> "
+                         "(leaves the originals untouched — safest for rollback/compare)")
+    rg.add_argument("--restore-index", action="store_true", help="also rebuild indexes")
+    rg.add_argument("--restore-extra", nargs=argparse.REMAINDER, default=[])
+
     p_config = sub.add_parser("config", help="manage the cluster config file (~/.ternctl.yaml)")
     csub = p_config.add_subparsers(dest="config_command", required=True)
     c_add = csub.add_parser("add", help="add or update a cluster")
@@ -253,6 +271,10 @@ def run_command(args, parser):
 
         if args.command == "backup":
             do_backup(args)
+            return
+
+        if args.command == "restore":
+            do_restore(args)
             return
 
         if args.command == "topology":

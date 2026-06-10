@@ -46,6 +46,19 @@ def restore_secondary(args, upstream, downstream):
     run_backup(args, argv)
 
 
+def restore_backup(args):
+    """Plain (non-secondary) restore of a backup into a cluster — rollback / clone.
+    With --restore-suffix the originals are left untouched (restored into new
+    collections <name><suffix>)."""
+    argv = ["--config", args.backup_config, "restore", "-n", args.backup_name]
+    if getattr(args, "restore_suffix", None):
+        argv += ["-s", args.restore_suffix]
+    if getattr(args, "restore_index", False):
+        argv.append("--restore_index")
+    argv += getattr(args, "restore_extra", [])
+    run_backup(args, argv)
+
+
 # --------------------------------------------------------------------------- #
 # pymilvus verification
 # --------------------------------------------------------------------------- #

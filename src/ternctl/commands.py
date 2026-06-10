@@ -14,7 +14,7 @@ from .config import load_config, save_config, resolve_cluster, config_path
 from .replication import (build_replicate_config, apply_replicate_config,
                           standalone_replicate_config, get_replicate_checkpoints, fetch_cdc_latency,
                           prefetch_salvage_checkpoints)
-from .backup import backup_create, restore_secondary
+from .backup import backup_create, restore_secondary, restore_backup
 from .verify import verify
 
 
@@ -54,7 +54,28 @@ def do_backup(args):
     header("DONE")
     info(f"backup '{_bold(args.backup_name)}' created (workdir: {args.backup_workdir}).")
     info(f"safe to reinstall {_cyan(cluster.cluster_id)} now — restore later with "
-         f"milvus-backup, or rebuild a fresh standby from the current primary.")
+         f"{_bold('ternctl restore')}, or rebuild a fresh standby from the current primary.")
+
+
+def do_restore(args):
+    """Restore a milvus-backup snapshot into a cluster (rollback / clone).
+    With --restore-suffix, originals are untouched (restored into new collections)."""
+    config = load_config(getattr(args, "config", None))
+    cluster = resolve_cluster("cluster", args.cluster, config)
+    suffix = getattr(args, "restore_suffix", None)
+    header("RESTORE",
+           f"cluster:  {_cyan(cluster.cluster_id)} ({cluster.uri})\n"
+           f"backup:   {args.backup_name}"
+           + (f"\nsuffix:   {suffix} (restores into NEW collections; originals untouched)"
+              if suffix else "\ninto the original collections")
+           + "\ntarget must be a STANDALONE primary — restore creates collections "
+             "(needs primary) and bulk-imports (blocked on a replicating cluster)")
+    step("1/1", f"restore '{args.backup_name}' into {cluster.cluster_id}")
+    restore_backup(args)
+    done()
+    header("DONE")
+    info(f"backup '{_bold(args.backup_name)}' restored into {_cyan(cluster.cluster_id)}"
+         + (f" as <name>{suffix}." if suffix else "."))
 
 
 def do_switchover(args, upstream, downstream):
