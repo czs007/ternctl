@@ -6,7 +6,7 @@ import sys
 import time
 
 import grpc
-from pymilvus.grpc_gen import milvus_pb2
+from pymilvus.grpc_gen import common_pb2, milvus_pb2
 
 from .output import (header, step, done, info, warn, kv, _green, _red, _yel, _cyan, _dim, _bold)
 from .cluster import pchannels_of, auth_metadata, grpc_addr
@@ -21,13 +21,49 @@ from .verify import verify
 
 
 # --------------------------------------------------------------------------- #
+def merged_replicate_config(upstream, downstream):
+    """The upstream's CURRENT topology plus the new upstream→downstream edge,
+    as one declarative config. UpdateReplicateConfiguration REPLACES the whole
+    replicate state, so adding a second downstream (a→c while a→b exists) must
+    carry the existing edges and cluster defs — a bare [a,c]/[a→c] config
+    would silently tear down a→b. Existing cluster defs other than the two
+    endpoints are kept verbatim; the endpoints' defs are rebuilt fresh (their
+    uri/token may have changed)."""
+    keep_clusters, edges = [], []
+    try:
+        cur = get_replicate_view(upstream)
+        keep_clusters = [c for c in cur.clusters
+                         if c.cluster_id not in (upstream.cluster_id,
+                                                 downstream.cluster_id)]
+        edges = [(t.source_cluster_id, t.target_cluster_id)
+                 for t in cur.cross_cluster_topology]
+    except RuntimeError:
+        pass  # no readable view (fresh/independent upstream) → start clean
+    new_edge = (upstream.cluster_id, downstream.cluster_id)
+    if new_edge not in edges:
+        edges.append(new_edge)
+    if len(edges) > 1:
+        info("carrying existing topology: "
+             + ", ".join(f"{s}→{t}" for (s, t) in edges if (s, t) != new_edge))
+    return common_pb2.ReplicateConfiguration(
+        clusters=list(keep_clusters) + [upstream.milvus_cluster(),
+                                        downstream.milvus_cluster()],
+        cross_cluster_topology=[
+            common_pb2.CrossClusterTopology(source_cluster_id=s,
+                                            target_cluster_id=t)
+            for (s, t) in edges],
+    )
+
+
 def do_rebuild(args, upstream, downstream):
     header("REBUILD",
            f"source: {_cyan(upstream.cluster_id)} ({upstream.uri})\n"
            f"target: {_cyan(downstream.cluster_id)} ({downstream.uri})")
     step("1/4", "snapshot primary"); backup_create(args); done()
     step("2/4", "register topology on target")
-    up2down = build_replicate_config(upstream, downstream, source=upstream, target=downstream)
+    # Merge, don't replace: keeps any existing edges (e.g. a→b) intact when
+    # adding this one — see merged_replicate_config.
+    up2down = merged_replicate_config(upstream, downstream)
     apply_replicate_config(downstream, up2down, _quiet=True); done()
     step("3/4", "restore snapshot to target"); restore_secondary(args, upstream, downstream); done()
     step("4/4", f"enable {upstream.cluster_id} → {downstream.cluster_id} replication")
