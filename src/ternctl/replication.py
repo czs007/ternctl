@@ -3,8 +3,48 @@
 import grpc
 from pymilvus.grpc_gen import common_pb2, milvus_pb2
 
-from .output import (log)
+from .output import (log, warn)
 from .cluster import auth_metadata, status_ok
+
+
+# Default retry policy for the replication-config read RPCs
+# (GetReplicateConfiguration / GetReplicateInfo). See call_with_retry below.
+RPC_RETRIES = 6
+RPC_TIMEOUT = 3.0
+
+
+def call_with_retry(make_call, tries=RPC_RETRIES, timeout=RPC_TIMEOUT):
+    """Invoke a unary gRPC call that may hang server-side until the client
+    deadline, retrying on DEADLINE_EXCEEDED only.
+
+    Milvus 2.6's GetReplicateConfiguration / GetReplicateInfo block on the
+    streaming/replication read path when the queried cluster is INDEPENDENT
+    (no replication topology) — the proxy receives the request but never gets a
+    timely answer from streamingcoord, so the call returns the (correct, usually
+    empty) result only intermittently, right at the deadline boundary. A single
+    long-timeout call is therefore a coin-flip: ~half deadline out and look like
+    "unreachable" even though the cluster is healthy. See milvus-io/milvus#50344
+    for the sibling GetReplicateInfo case.
+
+    The fix that actually works client-side: use a SHORT per-attempt `timeout`
+    and retry. Each attempt resolves in a few seconds; the first one that lands
+    an answer returns it. Once a real topology exists the call returns fast and
+    the first attempt succeeds, so this is a no-op in the healthy case.
+
+    `make_call(timeout=...)` performs one attempt and returns the RPC response.
+    Any non-DEADLINE_EXCEEDED RpcError (UNAVAILABLE, UNAUTHENTICATED, …) is a
+    genuine failure and is raised immediately. If every attempt deadlines out,
+    the last DEADLINE_EXCEEDED error is raised.
+    """
+    last = None
+    for _ in range(max(1, tries)):
+        try:
+            return make_call(timeout=timeout)
+        except grpc.RpcError as e:
+            last = e
+            if e.code() != grpc.StatusCode.DEADLINE_EXCEEDED:
+                raise
+    raise last
 
 
 def build_replicate_config(upstream, downstream, source, target):
@@ -75,7 +115,9 @@ def break_topology_config(*clusters):
     )
 
 
-def get_replicate_checkpoints(observer, source_cluster_id, pchannels):
+def get_replicate_checkpoints(observer, source_cluster_id, pchannels,
+                              rpc_tries=RPC_RETRIES, rpc_timeout=RPC_TIMEOUT,
+                              early_stop=True):
     """Return {pchannel: time_tick}, distinguishing three states:
       - int > 0  : active (CDC has forwarded; this is the last-replicated tick)
       - 0        : idle — RPC succeeded but the checkpoint hasn't advanced yet
@@ -84,24 +126,46 @@ def get_replicate_checkpoints(observer, source_cluster_id, pchannels):
       - None     : unreachable — the GetReplicateInfo RPC itself failed
     The 0-vs-None split is the whole point: a configured-but-idle edge looks
     identical to a broken one if you collapse both to "n/a".
+
+    early_stop: if the FIRST pchannel probe exhausts its whole retry budget
+    (the cluster's GetReplicateInfo path is down — e.g. it's INDEPENDENT, no
+    edge configured), skip the remaining pchannels and mark them unreachable
+    rather than grinding through all N × rpc_tries × rpc_timeout. Probing one
+    channel is enough to know the path is dead; the rest are still returned as
+    None so the caller's summary is unchanged. A live cluster answers the first
+    probe and the loop proceeds normally.
     """
-    stub, channel = observer.stub()
     out = {}
-    try:
-        for pch in pchannels:
+    for idx, pch in enumerate(pchannels):
+        # Fresh channel PER attempt: a deadlined call poisons its HTTP/2
+        # connection, so retries on a reused channel would all fail too.
+        def _call(timeout, _pch=pch):
+            stub, channel = observer.stub()
             try:
-                resp = stub.GetReplicateInfo(
+                return stub.GetReplicateInfo(
                     milvus_pb2.GetReplicateInfoRequest(
-                        source_cluster_id=source_cluster_id, target_pchannel=pch
+                        source_cluster_id=source_cluster_id, target_pchannel=_pch
                     ),
                     metadata=auth_metadata(observer.token),
-                    timeout=10,
+                    timeout=timeout,
                 )
-                out[pch] = int(resp.checkpoint.time_tick)
-            except grpc.RpcError:
-                out[pch] = None  # unreachable, not idle
-    finally:
-        channel.close()
+            finally:
+                channel.close()
+        try:
+            resp = call_with_retry(_call, tries=rpc_tries, timeout=rpc_timeout)
+            out[pch] = int(resp.checkpoint.time_tick)
+        except grpc.RpcError:
+            out[pch] = None  # unreachable, not idle
+            if early_stop and idx == 0 and len(pchannels) > 1:
+                # First probe dead after the full retry budget → the whole
+                # GetReplicateInfo path is down. Don't probe the other channels.
+                warn(f"first pchannel unreachable after {rpc_tries} tries — "
+                     f"skipping the remaining {len(pchannels) - 1} pchannel(s) "
+                     f"(cluster has no live replication path; if it's INDEPENDENT "
+                     f"this is expected)")
+                for rest in pchannels[idx + 1:]:
+                    out[rest] = None
+                break
     return out
 
 

@@ -33,6 +33,18 @@ def add_common(p):
                    help="config file path (default ~/.ternctl.yaml)")
 
 
+def add_rpc_opts(p):
+    g = p.add_argument_group("replication-RPC retry (topology/status)")
+    g.add_argument("--rpc-timeout", type=float, default=None, metavar="SECONDS",
+                   help="per-attempt timeout for GetReplicateConfiguration / "
+                        "GetReplicateInfo (default 3s). These RPCs hang to the "
+                        "deadline on INDEPENDENT clusters; a short timeout + retry "
+                        "avoids false 'unreachable'. See milvus-io/milvus#50344.")
+    g.add_argument("--rpc-retries", type=int, default=None, metavar="N",
+                   help="how many short-timeout attempts before declaring a "
+                        "cluster unreachable (default 6)")
+
+
 def add_backup(p):
     g = p.add_argument_group("milvus-backup")
     g.add_argument("--backup-bin", default="./milvus-backup")
@@ -102,6 +114,7 @@ def build_parser():
 
     p_status = sub.add_parser("status", help="dump replication checkpoints")
     add_common(p_status)
+    add_rpc_opts(p_status)
     p_status.add_argument("--upstream-cdc-metrics", "--up-cdc", default=None, metavar="URL",
                           dest="upstream_cdc_metrics",
                           help="override the UPSTREAM (source) cluster's CDC pod metrics "
@@ -116,13 +129,15 @@ def build_parser():
     p_topo.add_argument("--cluster", action="append", default=None, metavar="NAME[=URI]",
                         help="a cluster to query: a config NAME or inline NAME=URI "
                              "(repeat for each cluster, or use --clusters)")
-    p_topo.add_argument("--clusters", default=None, metavar="N1,N2,N3",
-                        help="comma-separated cluster names from the config file "
-                             "(shorthand for repeating --cluster)")
+    p_topo.add_argument("--clusters", default=None, nargs="+", metavar="N1,N2,N3",
+                        help="cluster names from the config file, separated by "
+                             "commas and/or spaces (shorthand for repeating "
+                             "--cluster). 'a,b,c', 'a, b, c' and 'a b c' all work.")
     p_topo.add_argument("--pchannel-num", type=int, default=None)
     p_topo.add_argument("--token", default=None)
     p_topo.add_argument("--config", default=None, metavar="PATH",
                         help="config file path (default ~/.ternctl.yaml)")
+    add_rpc_opts(p_topo)
 
     p_verify = sub.add_parser("verify", help="compare row counts")
     add_common(p_verify)
@@ -300,6 +315,14 @@ def run_command(args, parser):
         sys.exit(1)
 
 
+def _subparser_choices(parser):
+    """Map of subcommand name -> its subparser, for `help <cmd>` in the REPL."""
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            return action.choices
+    return {}
+
+
 def run_repl(parser):
     """Interactive shell: run subcommands without re-typing the launcher each time.
     Uses stdlib only — readline (if present) gives history + line editing."""
@@ -324,13 +347,21 @@ def run_repl(parser):
             continue
         if line in ("exit", "quit", "q"):
             break
-        if line in ("help", "?"):
-            parser.print_help()
-            continue
         try:
             argv = shlex.split(line)
         except ValueError as e:
             print(f"  {_red('parse error')}: {e}")
+            continue
+        if argv and argv[0] in ("help", "?", "h"):
+            # `help` → top-level usage; `help <subcommand>` → that command's help.
+            choices = _subparser_choices(parser)
+            if len(argv) > 1 and argv[1] in choices:
+                choices[argv[1]].print_help()
+            elif len(argv) > 1:
+                print(f"  {_red('no such command')}: {argv[1]} "
+                      f"(try {_bold('help')} for the list)")
+            else:
+                parser.print_help()
             continue
         if argv and argv[0] == "repl":
             print("  already in the shell")
