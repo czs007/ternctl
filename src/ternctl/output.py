@@ -72,6 +72,7 @@ def _spinner_end():
         _spinner_stop = None
 
 def header(title, subtitle=None):
+    _spinner_end()  # kill any spinner left dangling by an error path
     bar = "━" * 4
     print(f"\n{_bold(_cyan(bar + ' ' + title + ' '))}{_dim('━' * max(1, _WIDTH - len(title) - 7))}", flush=True)
     if subtitle:
@@ -101,18 +102,22 @@ def fail(msg=""):
     print(f"{_red('✗')} {_dim(f'({dt:.1f}s)')} {_red(msg)}", flush=True)
 
 def info(msg):
+    _spinner_end()
     print(f"  {_dim('·')} {msg}", flush=True)
 
 def warn(msg):
+    _spinner_end()
     print(f"  {_yel('⚠')} {msg}", flush=True)
 
 def kv(k, v, color=None):
+    _spinner_end()
     val = v if color is None else color(v)
     print(f"  {_dim(k + ':')} {val}", flush=True)
 
 # Backward-compat: keep the older `log()` so I don't have to touch every call.
 # In demo mode it prints to the same demo-friendly format.
 def log(msg):
+    _spinner_end()
     print(f"  {_dim('·')} {msg}", flush=True)
 
 

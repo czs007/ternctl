@@ -1,6 +1,7 @@
 """Argument parser, command dispatch, REPL, and the `ternctl` entry point."""
 import argparse
 import sys
+import time
 
 from . import output
 from .output import log, _red, _cyan, _bold, _dim
@@ -59,7 +60,10 @@ def add_backup(p):
                    help="milvus-backup binary (config: defaults.backup_bin)")
     g.add_argument("--backup-workdir", default=None,
                    help="milvus-backup working dir (config: defaults.backup_workdir)")
-    g.add_argument("--backup-name", default="ternctl_backup")
+    g.add_argument("--backup-name", default=None,
+                   help="snapshot name in the archive (default: "
+                        "ternctl_backup_<timestamp> — unique per run, because a "
+                        "create with an existing name fails)")
     g.add_argument("--backup-config", default=None,
                    help="backup config for the SOURCE cluster "
                         "(config: the upstream cluster's backup_config)")
@@ -75,6 +79,8 @@ def fill_backup_args(args, config, up_cid=None, down_cid=None):
     historical default. up_cid/down_cid are config-file cluster names whose
     `backup_config` fields feed --backup-config / --backup-config-secondary."""
     defaults = load_defaults(getattr(args, "config", None))
+    if getattr(args, "backup_name", None) is None:
+        args.backup_name = "ternctl_backup_" + time.strftime("%Y%m%d_%H%M%S")
     if getattr(args, "backup_bin", None) is None:
         args.backup_bin = defaults.get("backup_bin") or "./milvus-backup"
     if getattr(args, "backup_workdir", None) is None:
@@ -534,6 +540,7 @@ def run_repl(parser):
     print(_dim("  run subcommands directly (status, topology, rebuild, config list, ...)"))
     print(_dim("  TAB completes commands, flags and cluster names · 'help' lists commands · 'exit' or Ctrl-D quits\n"))
     while True:
+        output._spinner_end()  # belt-and-braces: never let a dangling spinner draw over the prompt
         try:
             line = input("ternctl> ").strip()
         except EOFError:
