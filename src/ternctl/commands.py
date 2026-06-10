@@ -12,7 +12,7 @@ from .output import (header, step, done, info, warn, kv, _green, _red, _yel, _cy
 from .cluster import pchannels_of, auth_metadata
 from .config import load_config, save_config, resolve_cluster, config_path
 from .replication import (build_replicate_config, apply_replicate_config,
-                          standalone_replicate_config, get_replicate_checkpoints, fetch_cdc_latency,
+                          independent_replicate_config, get_replicate_checkpoints, fetch_cdc_latency,
                           prefetch_salvage_checkpoints)
 from .backup import backup_create, restore_secondary, restore_backup
 from .verify import verify
@@ -68,7 +68,7 @@ def do_restore(args):
            f"backup:   {args.backup_name}"
            + (f"\nsuffix:   {suffix} (restores into NEW collections; originals untouched)"
               if suffix else "\ninto the original collections")
-           + "\ntarget must be a STANDALONE primary — restore creates collections "
+           + "\ntarget must be an INDEPENDENT primary — restore creates collections "
              "(needs primary) and bulk-imports (blocked on a replicating cluster)")
     step("1/1", f"restore '{args.backup_name}' into {cluster.cluster_id}")
     restore_backup(args)
@@ -147,7 +147,7 @@ def do_force_promote(args, target):
             if rpc_err == len(pchannels):
                 warn(f"ALL {rpc_err} pchannels returned rpc_error — GetReplicateInfo is "
                      f"unreachable on this cluster. Likely cause: target is already a "
-                     f"standalone primary, see milvus-io/milvus#50344. Prefetch is only "
+                     f"independent primary, see milvus-io/milvus#50344. Prefetch is only "
                      f"effective BEFORE force_promote takes effect.")
             elif rpc_err:
                 warn(f"{rpc_err} pchannels rpc_error, {empty} empty — only "
@@ -157,12 +157,12 @@ def do_force_promote(args, target):
                      f"(brand-new pchannels, or replication just started).")
 
     # === Step 1: the actual force_promote
-    step("1/1", f"promote {target.cluster_id} to standalone primary")
-    config = standalone_replicate_config(target)
+    step("1/1", f"promote {target.cluster_id} to independent primary")
+    config = independent_replicate_config(target)
     apply_replicate_config(target, config, force_promote=True, _quiet=True); done()
 
     header("DONE")
-    kv("new primary", f"{target.cluster_id} ({target.uri})  [STANDALONE — no standby]", _green)
+    kv("new primary", f"{target.cluster_id} ({target.uri})  [INDEPENDENT — no standby]", _green)
     if salvage_out_path:
         kv("salvage snapshot", salvage_out_path, _bold)
         info(f"to recover from {args.salvage_source_cluster_id}'s WAL, feed it into:")
@@ -295,7 +295,7 @@ def do_topology(args):
     """Show the current replication topology across one or more clusters.
 
     Queries each cluster's own GetReplicateConfiguration (its self-view of the
-    topology), prints each cluster's role (PRIMARY / STANDBY / STANDALONE) as
+    topology), prints each cluster's role (PRIMARY / STANDBY / INDEPENDENT) as
     derived from that view, the union of edges, and a consistency check. Two
     clusters disagreeing usually means a residual edge from an interrupted
     force-promote/teardown — the cluster still pointing at a now-independent
@@ -366,7 +366,7 @@ def do_topology(args):
         elif incoming:
             role, detail = _yel("STANDBY"), "← " + ", ".join(incoming)
         else:
-            role, detail = _dim("STANDALONE"), _dim("(no replication edges)")
+            role, detail = _dim("INDEPENDENT"), _dim("(no replication edges)")
         print(f"  {_green('●')} {cid:14} {role}  {detail}")
 
     # Union of edges across all views.
@@ -392,7 +392,7 @@ def do_topology(args):
              "interrupted force-promote/teardown (a cluster still pointing at a "
              "now-independent peer keeps retrying it).")
         for cid, es in reachable.items():
-            shown = ", ".join(f"{s}→{t}" for (s, t) in sorted(es)) or "standalone"
+            shown = ", ".join(f"{s}→{t}" for (s, t) in sorted(es)) or "independent"
             print(f"    {cid}: {shown}")
 
 
@@ -405,22 +405,22 @@ def do_replicate_config(args, upstream, downstream):
 
 
 def do_break_topology(args, upstream, downstream):
-    """Tear down a single-edge replication topology by applying a standalone
+    """Tear down a single-edge replication topology by applying an independent
     config to the PRIMARY side only.
 
     Mechanism (verified end-to-end against milvus v2.6.18):
     - Apply `clusters=[primary]`, `topology=[]`, `force_promote=False` on the
       primary cluster. Milvus accepts: a primary is allowed to clear its
-      outbound edge by becoming standalone.
+      outbound edge by becoming independent.
     - The change BROADCASTS to all clusters in the prior topology. The old
-      secondary (downstream) automatically transitions to standalone primary
+      secondary (downstream) automatically transitions to independent primary
       too — no second call needed.
     - Calling `force_promote=True` on the old secondary AFTER step 1 is
       rejected with "current cluster is primary" — because by then it
-      already IS standalone primary.
+      already IS independent primary.
 
     Note: `clusters=[A,B], topology=[]` (keeping both cluster defs) is
-    rejected by the validator ("primary count is not 1"). The standalone
+    rejected by the validator ("primary count is not 1"). The independent
     config (single cluster + no topology) is the only shape that works.
 
     Note: do NOT use this as a "pause" — the source's
@@ -432,11 +432,11 @@ def do_break_topology(args, upstream, downstream):
            f"primary:   {_cyan(upstream.cluster_id)}\n"
            f"secondary: {_cyan(downstream.cluster_id)}\n"
            f"{_yel('⚠')} DELETES the edge — use only for teardown, not as a pause")
-    step("1/1", f"apply standalone config on primary ({upstream.cluster_id})")
-    apply_replicate_config(upstream, standalone_replicate_config(upstream),
+    step("1/1", f"apply independent config on primary ({upstream.cluster_id})")
+    apply_replicate_config(upstream, independent_replicate_config(upstream),
                            force_promote=False, _quiet=True); done()
     header("DONE")
     info(f"edge {upstream.cluster_id} → {downstream.cluster_id} removed")
-    info("both clusters auto-transition to standalone primary (broadcast)")
+    info("both clusters auto-transition to independent primary (broadcast)")
 
 

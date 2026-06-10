@@ -52,7 +52,7 @@ def apply_replicate_config(target_cluster, config, force_promote=False, _quiet=F
         channel.close()
 
 
-def standalone_replicate_config(target_cluster):
+def independent_replicate_config(target_cluster):
     """Build the no-topology, current-cluster-only config that force_promote requires."""
     return common_pb2.ReplicateConfiguration(
         clusters=[target_cluster.milvus_cluster()],
@@ -148,7 +148,7 @@ def prefetch_salvage_checkpoints(target, source_cluster_id, pchannels):
 
     Why this exists: see milvus-io/milvus#50344. After force_promote, the
     only client-facing API that exposes the (later-persisted) salvage_checkpoint
-    is GetReplicateInfo, but its handler returns early on a standalone primary
+    is GetReplicateInfo, but its handler returns early on an independent primary
     and never reaches the GetSalvageCheckpoint call. Until that's fixed, the
     only way to obtain a checkpoint for Data Salvage is to grab it BEFORE
     flipping the cluster's role — which is exactly what this function does.

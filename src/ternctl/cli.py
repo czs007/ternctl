@@ -77,7 +77,7 @@ def build_parser():
     p_switch = sub.add_parser("switchover", help="reverse topology (graceful promote)")
     add_common(p_switch)
 
-    p_force = sub.add_parser("force-promote", help="promote secondary to standalone primary (original primary down)")
+    p_force = sub.add_parser("force-promote", help="promote secondary to independent primary (original primary down)")
     g = p_force.add_argument_group("target (NAME from config, or NAME=URI inline)")
     g.add_argument("--target", required=True, metavar="NAME[=URI]",
                    help="the secondary being promoted: a config name, or NAME=URI inline")
@@ -93,7 +93,7 @@ def build_parser():
                     help="cluster id of the OLD primary you may want to salvage data from. "
                          "When set, the tool snapshots the live ReplicateCheckpoint for every "
                          "target pchannel BEFORE the force_promote RPC, while GetReplicateInfo "
-                         "still works. After force_promote that API is broken on a standalone "
+                         "still works. After force_promote that API is broken on an independent "
                          "primary — see milvus-io/milvus#50344. Without this flag, salvage of "
                          "in-flight messages from the dead primary is not possible.")
     sg.add_argument("--salvage-output", default=None,
@@ -159,7 +159,7 @@ def build_parser():
     bg.add_argument("--backup-create-extra", nargs=argparse.REMAINDER, default=[])
 
     p_restore = sub.add_parser("restore",
-                               help="restore a milvus-backup snapshot into a STANDALONE cluster (rollback / clone)")
+                               help="restore a milvus-backup snapshot into an INDEPENDENT cluster (rollback / clone)")
     p_restore.add_argument("--cluster", required=True, metavar="NAME[=URI]",
                            help="the cluster to restore into (config NAME or NAME=URI)")
     p_restore.add_argument("--config", default=None, metavar="PATH",
@@ -251,7 +251,7 @@ def run_command(args, parser):
                                      pchannel_num=args.pchannel_num)
             if not args.yes:
                 ans = input(
-                    f"\nFORCE-PROMOTE will make '{target.cluster_id}' a standalone primary.\n"
+                    f"\nFORCE-PROMOTE will make '{target.cluster_id}' an independent primary.\n"
                     f"Data written to the OLD primary after the CDC lag horizon will be LOST.\n"
                     f"Type 'force-promote' to confirm: "
                 ).strip()

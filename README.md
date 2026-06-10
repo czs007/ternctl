@@ -59,7 +59,7 @@ Every command takes clusters two ways:
 |---|---|
 | `rebuild` | seed the standby from a backup + start replication |
 | `switchover` | gracefully reverse the topology (planned failover) |
-| `force-promote` | promote a standby to standalone primary when the primary is **down** (bounded RPO = CDC lag); can prefetch a salvage checkpoint |
+| `force-promote` | promote a standby to independent primary when the primary is **down** (bounded RPO = CDC lag); can prefetch a salvage checkpoint |
 | `status` | per-pchannel replication progress; with CDC metrics, the real e2e lag |
 | `topology` | show the replication topology across clusters + a consistency check |
 | `verify` | compare row counts across clusters (`--once` for a single snapshot) |

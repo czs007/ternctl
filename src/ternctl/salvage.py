@@ -136,7 +136,7 @@ def _decode_body(type_id, raw):
 def get_salvage_checkpoint(new_primary_uri, source_cluster_id, target_pchannel,
                            token="root:Milvus"):
     """Call GetReplicateInfo on the new primary; return (kafka_offset, time_tick)
-    or (None, None). NOTE: broken on a standalone primary post-force-promote
+    or (None, None). NOTE: broken on an independent primary post-force-promote
     (milvus-io/milvus#50344) — prefer --from-checkpoint-file."""
     host_port = new_primary_uri.replace("http://", "").replace("https://", "").rstrip("/")
     channel = grpc.insecure_channel(host_port)
