@@ -10,7 +10,7 @@ from pymilvus.grpc_gen import milvus_pb2
 
 from .output import (header, step, done, info, warn, kv, _green, _red, _yel, _cyan, _dim, _bold)
 from .cluster import pchannels_of, auth_metadata, grpc_addr
-from .config import load_config, save_config, resolve_cluster, config_path
+from .config import load_config, load_defaults, save_config, resolve_cluster, config_path
 from .replication import (build_replicate_config, apply_replicate_config,
                           independent_replicate_config, get_replicate_checkpoints, fetch_cdc_latency,
                           prefetch_salvage_checkpoints, call_with_retry,
@@ -96,6 +96,30 @@ def do_switchover(args, upstream, downstream):
 
 
 def do_force_promote(args, target):
+    # Salvage-source auto-discovery: the standby's own replicate config records
+    # its incoming edge — its source IS the (dead) primary whose checkpoint we
+    # must snapshot before the role flips. Opting OUT (--no-salvage) is the
+    # explicit action, because skipping the prefetch makes the old primary's
+    # in-flight data unrecoverable (see #50344 / HANDOFF §3.2).
+    if not args.salvage_source_cluster_id and not getattr(args, "no_salvage", False):
+        try:
+            cfg = get_replicate_view(target)
+            sources = [t.source_cluster_id for t in cfg.cross_cluster_topology
+                       if t.target_cluster_id == target.cluster_id]
+        except RuntimeError as e:
+            sources = []
+            warn(f"salvage-source auto-discovery failed ({e}) — "
+                 f"proceeding WITHOUT prefetch; pass --salvage-source-cluster-id "
+                 f"explicitly to capture one")
+        if len(sources) == 1:
+            args.salvage_source_cluster_id = sources[0]
+            info(f"salvage source auto-discovered from {target.cluster_id}'s "
+                 f"replicate config: {_cyan(sources[0])} "
+                 f"(pass --no-salvage to skip the prefetch)")
+        elif len(sources) > 1:
+            warn(f"{target.cluster_id} has {len(sources)} incoming edges "
+                 f"({', '.join(sources)}) — cannot pick a salvage source "
+                 f"automatically, pass --salvage-source-cluster-id")
     do_prefetch = bool(args.salvage_source_cluster_id)
     subtitle = (
         f"target: {_cyan(target.cluster_id)} ({target.uri})\n"
@@ -246,9 +270,11 @@ def do_status(args, upstream, downstream):
 def _cluster_line(name, e):
     """One formatted listing line for a config entry (shared by clusters / config list)."""
     extras = []
-    if e.get("inter_uri"):   extras.append("inter=" + e["inter_uri"])
-    if e.get("cdc_metrics"): extras.append("cdc=" + e["cdc_metrics"])
-    if e.get("token"):       extras.append("token=set")
+    if e.get("inter_uri"):     extras.append("inter=" + e["inter_uri"])
+    if e.get("cdc_metrics"):   extras.append("cdc=" + e["cdc_metrics"])
+    if e.get("backup_config"): extras.append("backup=" + os.path.basename(e["backup_config"]))
+    if e.get("kafka_brokers"): extras.append("kafka=" + e["kafka_brokers"])
+    if e.get("token"):         extras.append("token=set")
     return (f"  {_cyan(name):18} {_dim('uri=')}{e.get('uri','?')}"
             + ("  " + _dim(" ".join(extras)) if extras else ""))
 
@@ -318,48 +344,58 @@ def do_backups(args):
               f"  {_dim('collections=')}{','.join(cols) or '-'}")
 
 
-def do_status_all(args, upstream, config):
-    """`status --upstream X` with no --downstream: discover X's downstreams
-    from its own replicate configuration and run status against each one.
-    Downstream URIs come from the config file — a discovered cluster_id that
-    isn't configured there is reported and skipped."""
-    rpc_timeout = getattr(args, "rpc_timeout", None) or RPC_TIMEOUT
-    rpc_tries = getattr(args, "rpc_retries", None) or RPC_RETRIES
-
+def get_replicate_view(cluster, rpc_tries=None, rpc_timeout=None):
+    """One cluster's own replicate configuration (with the usual short-timeout
+    retry against the INDEPENDENT-state hang). Raises RuntimeError if it stays
+    unreachable after the retry budget."""
     def _call(timeout):
-        stub, ch = upstream.stub()
+        stub, ch = cluster.stub()
         try:
             return stub.GetReplicateConfiguration(
                 milvus_pb2.GetReplicateConfigurationRequest(),
-                metadata=auth_metadata(upstream.token), timeout=timeout)
+                metadata=auth_metadata(cluster.token), timeout=timeout)
         finally:
             ch.close()
     try:
-        resp = call_with_retry(_call, tries=rpc_tries, timeout=rpc_timeout)
+        return call_with_retry(_call, tries=rpc_tries or RPC_RETRIES,
+                               timeout=rpc_timeout or RPC_TIMEOUT).configuration
     except grpc.RpcError as e:
         raise RuntimeError(
-            f"cannot discover downstreams of {upstream.cluster_id}: "
-            f"GetReplicateConfiguration failed ({e.code().name if hasattr(e, 'code') else e})")
+            f"GetReplicateConfiguration on {cluster.cluster_id} failed "
+            f"({e.code().name if hasattr(e, 'code') else e})")
 
-    targets = [t.target_cluster_id
-               for t in resp.configuration.cross_cluster_topology
+
+def for_each_downstream(args, upstream, config, fn):
+    """--downstream omitted: discover the upstream's downstreams from its own
+    replicate configuration and run fn(args, upstream, downstream) for each.
+    Downstream URIs come from the config file — a discovered cluster_id that
+    isn't configured there is reported and skipped. Returns the AND of fn's
+    truthiness (None counts as ok) for verify-style exit codes."""
+    cfg = get_replicate_view(upstream,
+                             getattr(args, "rpc_retries", None),
+                             getattr(args, "rpc_timeout", None))
+    targets = [t.target_cluster_id for t in cfg.cross_cluster_topology
                if t.source_cluster_id == upstream.cluster_id]
     if not targets:
         warn(f"{upstream.cluster_id} has no outgoing replication edges — "
-             f"nothing to status. (It is INDEPENDENT or itself a standby; "
+             f"nothing to do. (It is INDEPENDENT or itself a standby; "
              f"run `ternctl topology` to see the full picture.)")
-        return
+        return True
     info(f"downstreams of {upstream.cluster_id} (from its replicate config): "
          + ", ".join(targets))
+    all_ok = True
     for tcid in targets:
         if tcid not in config:
             warn(f"downstream '{tcid}' is not in the config file — skipped. "
                  f"Add it: ternctl config add {tcid} --uri http://...:19530")
+            all_ok = False
             continue
         downstream = resolve_cluster("downstream", tcid, config,
                                      token=args.token,
                                      pchannel_num=args.pchannel_num)
-        do_status(args, upstream, downstream)
+        result = fn(args, upstream, downstream)
+        all_ok = all_ok and (result is None or bool(result))
+    return all_ok
 
 
 def do_config(args):
@@ -391,12 +427,30 @@ def do_config(args):
         if args.token is not None:        entry["token"] = args.token
         if args.pchannel_num is not None: entry["pchannel_num"] = args.pchannel_num
         if args.cdc_metrics is not None:  entry["cdc_metrics"] = args.cdc_metrics
+        if getattr(args, "backup_config", None) is not None:
+            entry["backup_config"] = os.path.abspath(args.backup_config)
+        if getattr(args, "kafka_brokers", None) is not None:
+            entry["kafka_brokers"] = args.kafka_brokers
         cfg[args.name] = entry
         saved = save_config(cfg, getattr(args, "config", None))
         header("CONFIG", f"saved '{_cyan(args.name)}' to {saved}")
         kv("uri", entry["uri"], _green)
-        if entry.get("inter_uri"):   kv("inter_uri", entry["inter_uri"])
-        if entry.get("cdc_metrics"): kv("cdc_metrics", entry["cdc_metrics"])
+        if entry.get("inter_uri"):     kv("inter_uri", entry["inter_uri"])
+        if entry.get("cdc_metrics"):   kv("cdc_metrics", entry["cdc_metrics"])
+        if entry.get("backup_config"): kv("backup_config", entry["backup_config"])
+        if entry.get("kafka_brokers"): kv("kafka_brokers", entry["kafka_brokers"])
+        return
+
+    if cmd == "set-defaults":
+        defaults = load_defaults(getattr(args, "config", None))
+        if args.backup_bin is not None:
+            defaults["backup_bin"] = os.path.abspath(args.backup_bin)
+        if args.backup_workdir is not None:
+            defaults["backup_workdir"] = os.path.abspath(args.backup_workdir)
+        saved = save_config(cfg, getattr(args, "config", None), defaults=defaults)
+        header("CONFIG", f"saved defaults to {saved}")
+        for k, v in sorted(defaults.items()):
+            kv(k, v)
         return
 
     if cmd == "remove":
@@ -431,9 +485,13 @@ def do_topology(args):
         for tok in raw:
             cluster_specs += [c.strip() for c in tok.replace(",", " ").split() if c.strip()]
     if not cluster_specs:
-        print(f"  {_red('✗')} give clusters via --cluster NAME (repeatable) or "
-              f"--clusters n1,n2,n3", file=sys.stderr)
-        sys.exit(2)
+        # No clusters given → default to every cluster in the config file.
+        cluster_specs = sorted(config)
+        if not cluster_specs:
+            print(f"  {_red('✗')} no clusters given and the config file is empty — "
+                  f"use --cluster NAME / --clusters n1,n2,n3, or "
+                  f"`ternctl config add`", file=sys.stderr)
+            sys.exit(2)
     resolved = [resolve_cluster("query", c, config, pchannel_num=args.pchannel_num,
                                 token=args.token) for c in cluster_specs]
     specs = [(cl.cluster_id, cl.dial_addr) for cl in resolved]

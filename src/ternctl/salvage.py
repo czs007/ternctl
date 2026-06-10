@@ -19,14 +19,17 @@ by offset. Across pchannels, sort by the `time_tick` field (globally monotonic).
 Transactional groups (BeginTxn → CommitTxn/AbortTxn) must be replayed as a unit.
 """
 import base64
+import copy
 import json
+import os
 import time
 from collections import Counter
 
 import grpc
 from pymilvus.grpc_gen import milvus_pb2, milvus_pb2_grpc, msg_pb2, schema_pb2
 
-from .output import header, kv, info, warn, _green, _yel, _cyan, _bold, _dim
+from .config import load_config
+from .output import header, kv, info, warn, _green, _red, _yel, _cyan, _bold, _dim
 
 
 # Source: pkg/proto/messages.proto enum MessageType in milvus/2.6.
@@ -206,12 +209,80 @@ def load_checkpoint_file(path, pchannel):
 
 
 def do_salvage(args):
-    """Drain the salvage window from Kafka into JSON Lines."""
+    """Entry point: single-pchannel dump, or a sweep over ALL pchannels of
+    --source-cluster (one output file per pchannel)."""
     try:
-        from kafka import KafkaConsumer, TopicPartition
+        from kafka import KafkaConsumer, TopicPartition  # noqa: F401 — fail early
     except ImportError:
         raise RuntimeError(
             "salvage needs kafka-python — install it with: pip install 'ternctl[salvage]'")
+
+    # --source-cluster pulls kafka_brokers (and the pchannel layout) from the
+    # config file, so a sweep needs nothing but the checkpoint file.
+    entry = {}
+    if args.source_cluster:
+        cfgmap = load_config(getattr(args, "config", None))
+        if args.source_cluster not in cfgmap:
+            known = ", ".join(sorted(cfgmap)) or "(empty)"
+            raise RuntimeError(
+                f"--source-cluster '{args.source_cluster}' is not in the config "
+                f"file. known clusters: {known}")
+        entry = cfgmap[args.source_cluster]
+        if not args.kafka_brokers:
+            args.kafka_brokers = entry.get("kafka_brokers")
+        if not args.source_cluster_id:
+            args.source_cluster_id = args.source_cluster
+    if not args.kafka_brokers:
+        raise RuntimeError(
+            "--kafka-brokers is required (or set kafka_brokers on the "
+            "--source-cluster's config entry: ternctl config add <name> "
+            "--kafka-brokers host:9092)")
+
+    if args.source_pchannel:
+        _salvage_one(args)
+        return
+
+    # === Sweep mode: all pchannels of --source-cluster
+    if not args.source_cluster:
+        raise RuntimeError(
+            "give --source-pchannel TOPIC for a single dump, or "
+            "--source-cluster NAME to sweep all of its pchannels")
+    n = int(entry.get("pchannel_num", 16))
+    outdir = None
+    if not args.summary_only:
+        outdir = args.output_dir or f"salvage_{args.source_cluster}"
+        os.makedirs(outdir, exist_ok=True)
+    results = []
+    for i in range(n):
+        sub = copy.copy(args)
+        sub.source_pchannel = f"{args.source_cluster}-rootcoord-dml_{i}"
+        if outdir is not None:
+            sub.output = os.path.join(outdir, f"salvage_dml_{i}.jsonl")
+        try:
+            written = _salvage_one(sub)
+            results.append((sub.source_pchannel, written, None))
+        except RuntimeError as e:
+            warn(f"{sub.source_pchannel}: {e}")
+            results.append((sub.source_pchannel, 0, str(e)))
+    header("SWEEP SUMMARY", f"{n} pchannels of {args.source_cluster}")
+    total = 0
+    for pch, w, err in results:
+        mark = (_red("✗ " + err[:70]) if err
+                else (_green(f"{w} msgs") if w else _dim("0 msgs")))
+        print(f"  {pch:46} {mark}")
+        total += w
+    print()
+    kv("total recovered", str(total), _bold)
+    if outdir is not None:
+        kv("output dir", os.path.abspath(outdir), _green)
+    info("replay MUST dedupe by primary key — the dump is a superset of the "
+         "lost data by design (see HANDOFF §3.6)")
+
+
+def _salvage_one(args):
+    """Drain the salvage window of ONE pchannel from Kafka into JSON Lines.
+    Returns the number of messages recovered."""
+    from kafka import KafkaConsumer, TopicPartition
 
     if not args.summary_only and not args.output:
         raise RuntimeError("--output is required unless --summary-only is set")
@@ -386,3 +457,4 @@ def do_salvage(args):
         print()
         warn("BeginTxn markers present — replay must respect transaction boundaries "
              "(pair each BeginTxn with its CommitTxn / AbortTxn).")
+    return written

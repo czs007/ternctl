@@ -29,16 +29,21 @@ Define your clusters once (kubectl-config style), then reference them by name:
 ```bash
 # 1. register clusters (writes ~/.ternctl.yaml)
 ternctl config add cluster-a --uri http://127.0.0.1:19530 \
-  --inter http://cluster-a-milvus.ns-a.svc.cluster.local:19530
+  --inter http://cluster-a-milvus.ns-a.svc.cluster.local:19530 \
+  --backup-config /abs/path/backup-a.yaml --kafka-brokers 127.0.0.1:19092
 ternctl config add cluster-b --uri http://127.0.0.1:19531 \
-  --inter http://cluster-b-milvus.ns-b.svc.cluster.local:19530
+  --inter http://cluster-b-milvus.ns-b.svc.cluster.local:19530 \
+  --backup-config /abs/path/backup-b.yaml
+ternctl config set-defaults --backup-bin /abs/path/milvus-backup \
+  --backup-workdir /abs/path/workdir
 
 # 2. seed the standby + start replication
+# (backup bin/config/workdir come from the config file — no --backup-* needed)
 ternctl rebuild   --upstream cluster-a --downstream cluster-b
 
 # 3. watch replication health
-ternctl status    --upstream cluster-a --downstream cluster-b
-ternctl topology  --clusters cluster-a,cluster-b
+ternctl status    --upstream cluster-a    # downstreams auto-discovered
+ternctl topology                          # no args = every configured cluster
 
 # 4. graceful switchover (reverse the direction)
 ternctl switchover --upstream cluster-a --downstream cluster-b
@@ -60,17 +65,17 @@ Every command takes clusters two ways:
 | `rebuild` | seed the standby from a backup + start replication |
 | `switchover` | gracefully reverse the topology (planned failover) |
 | `force-promote` | promote a standby to independent primary when the primary is **down** (bounded RPO = CDC lag); can prefetch a salvage checkpoint |
-| `status` | per-pchannel replication progress; with CDC metrics, the real e2e lag |
-| `topology` | show the replication topology across clusters + a consistency check |
-| `verify` | compare row counts across clusters (`--once` for a single snapshot) |
+| `status` | per-pchannel replication progress; omit `--downstream` to auto-discover all downstreams; with CDC metrics, the real e2e lag |
+| `topology` | replication topology + consistency check; no args = every cluster in the config file |
+| `verify` | compare row counts (`--once` for a single snapshot); omit `--downstream` to auto-discover |
 | `break-topology` | delete a replication edge (teardown — not a pause) |
 | `replicate-config` | low-level: apply a replicate configuration directly |
 | `backup` | snapshot a single cluster via milvus-backup (e.g. before reinstalling it) |
 | `restore` | restore a backup into a standalone cluster (rollback / clone) |
 | `backups` | list backups in an archive bucket (`--detail` adds size / version / collections) |
-| `salvage` | recover the unforwarded WAL tail from Kafka after a force-promote |
+| `salvage` | recover the unforwarded WAL tail from Kafka after a force-promote; `--source-cluster NAME` sweeps ALL pchannels in one run |
 | `clusters` | list the clusters from `~/.ternctl.yaml` (`--probe` checks gRPC reachability) |
-| `config` | manage `~/.ternctl.yaml` (`add` / `list` / `show` / `remove`) |
+| `config` | manage `~/.ternctl.yaml` (`add` / `list` / `show` / `remove` / `set-defaults`) |
 | `repl` | interactive shell — run subcommands without re-typing the launcher |
 
 Run `ternctl <command> --help` for full flags.

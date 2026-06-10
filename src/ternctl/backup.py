@@ -14,10 +14,10 @@ def run_backup(args, argv):
     clean. Pass --verbose to stream them through.
     """
     cmd = [os.path.abspath(args.backup_bin)] + argv
+    os.makedirs(args.backup_workdir, exist_ok=True)
     if output._VERBOSE:
         result = subprocess.run(cmd, cwd=args.backup_workdir)
     else:
-        os.makedirs(args.backup_workdir, exist_ok=True)
         log_path = os.path.join(args.backup_workdir, "milvus-backup-cli.log")
         with open(log_path, "ab") as f:
             f.write(("\n==== " + " ".join(argv) + " ====\n").encode())
@@ -32,6 +32,7 @@ def run_backup_capture(args, argv):
     """Run milvus-backup and CAPTURE its stdout — for commands whose output IS
     the result (list / get), unlike run_backup which logs it away."""
     cmd = [os.path.abspath(args.backup_bin)] + argv
+    os.makedirs(args.backup_workdir, exist_ok=True)
     result = subprocess.run(cmd, cwd=args.backup_workdir,
                             capture_output=True, text=True)
     if result.returncode != 0:

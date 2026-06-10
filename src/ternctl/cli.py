@@ -4,12 +4,12 @@ import sys
 
 from . import output
 from .output import log, _red, _cyan, _bold, _dim
-from .config import load_config, resolve_cluster
+from .config import load_config, load_defaults, resolve_cluster
 from .verify import verify
 from .commands import (do_rebuild, do_switchover, do_force_promote, do_status,
                        do_config, do_topology, do_replicate_config, do_break_topology,
                        do_backup, do_restore, do_clusters, do_backups,
-                       do_status_all)
+                       for_each_downstream)
 from .salvage import do_salvage
 
 
@@ -50,14 +50,45 @@ def add_rpc_opts(p):
 
 
 def add_backup(p):
-    g = p.add_argument_group("milvus-backup")
-    g.add_argument("--backup-bin", default="./milvus-backup")
-    g.add_argument("--backup-workdir", default=".")
+    # Defaults are None so explicit flags can be told apart from "not given";
+    # fill_backup_args() then falls back to the config file (per-cluster
+    # backup_config, defaults.backup_bin/backup_workdir) and finally to the
+    # historical hardcoded defaults.
+    g = p.add_argument_group("milvus-backup (all optional if set in ~/.ternctl.yaml)")
+    g.add_argument("--backup-bin", default=None,
+                   help="milvus-backup binary (config: defaults.backup_bin)")
+    g.add_argument("--backup-workdir", default=None,
+                   help="milvus-backup working dir (config: defaults.backup_workdir)")
     g.add_argument("--backup-name", default="ternctl_backup")
-    g.add_argument("--backup-config", default="backup.yaml")
-    g.add_argument("--backup-config-secondary", default="backup.yaml")
+    g.add_argument("--backup-config", default=None,
+                   help="backup config for the SOURCE cluster "
+                        "(config: the upstream cluster's backup_config)")
+    g.add_argument("--backup-config-secondary", default=None,
+                   help="backup config for the TARGET cluster "
+                        "(config: the downstream cluster's backup_config)")
     g.add_argument("--no-backup-index-extra", dest="backup_index_extra", action="store_false")
     g.add_argument("--backup-create-extra", nargs=argparse.REMAINDER, default=[])
+
+
+def fill_backup_args(args, config, up_cid=None, down_cid=None):
+    """Resolve the milvus-backup arguments: explicit flag > config file >
+    historical default. up_cid/down_cid are config-file cluster names whose
+    `backup_config` fields feed --backup-config / --backup-config-secondary."""
+    defaults = load_defaults(getattr(args, "config", None))
+    if getattr(args, "backup_bin", None) is None:
+        args.backup_bin = defaults.get("backup_bin") or "./milvus-backup"
+    if getattr(args, "backup_workdir", None) is None:
+        args.backup_workdir = defaults.get("backup_workdir") or "."
+    if getattr(args, "backup_config", None) is None and up_cid:
+        args.backup_config = (config.get(up_cid) or {}).get("backup_config")
+    if getattr(args, "backup_config", None) is None:
+        args.backup_config = "backup.yaml"
+    if hasattr(args, "backup_config_secondary"):
+        if args.backup_config_secondary is None and down_cid:
+            args.backup_config_secondary = (config.get(down_cid) or {}).get("backup_config")
+        if args.backup_config_secondary is None:
+            args.backup_config_secondary = "backup.yaml"
+    return args
 
 
 def clusters_from_args(args):
@@ -115,6 +146,13 @@ def build_parser():
     sg.add_argument("--salvage-output", default=None,
                     help="output path for the prefetched checkpoint JSON. "
                          "Default: ./salvage_checkpoint_<target>_<unix_ts>.json")
+    sg.add_argument("--no-salvage", action="store_true",
+                    help="skip the salvage-checkpoint prefetch entirely. Without this "
+                         "flag, omitting --salvage-source-cluster-id makes ternctl "
+                         "AUTO-DISCOVER the source from the target's own replicate "
+                         "configuration (its incoming edge) — the prefetch is read-only "
+                         "and skipping it makes the old primary's in-flight data "
+                         "unrecoverable, so opting OUT is the explicit action.")
 
     p_status = sub.add_parser("status", help="dump replication checkpoints")
     add_common(p_status, downstream_required=False)
@@ -144,7 +182,8 @@ def build_parser():
     add_rpc_opts(p_topo)
 
     p_verify = sub.add_parser("verify", help="compare row counts")
-    add_common(p_verify)
+    add_common(p_verify, downstream_required=False)
+    add_rpc_opts(p_verify)
     p_verify.add_argument("--collections", default=None)
     p_verify.add_argument("--once", action="store_true",
                           help="single snapshot — skip the internal retry/wait loop. "
@@ -168,21 +207,27 @@ def build_parser():
                           help="the cluster to back up (config NAME or NAME=URI)")
     p_backup.add_argument("--config", default=None, metavar="PATH",
                           help="ternctl config file (default ~/.ternctl.yaml)")
-    bg = p_backup.add_argument_group("milvus-backup")
-    bg.add_argument("--backup-bin", default="./milvus-backup")
-    bg.add_argument("--backup-workdir", default=".")
+    bg = p_backup.add_argument_group("milvus-backup (optional if set in ~/.ternctl.yaml)")
+    bg.add_argument("--backup-bin", default=None)
+    bg.add_argument("--backup-workdir", default=None)
     bg.add_argument("--backup-name", required=True, help="name for the backup")
-    bg.add_argument("--backup-config", required=True, metavar="PATH",
-                    help="milvus-backup config pointing at this cluster (its milvus / minio / etcd)")
+    bg.add_argument("--backup-config", default=None, metavar="PATH",
+                    help="milvus-backup config pointing at this cluster (its milvus / "
+                         "minio / etcd); default: the --cluster's backup_config")
     bg.add_argument("--no-backup-index-extra", dest="backup_index_extra", action="store_false")
     bg.add_argument("--backup-create-extra", nargs=argparse.REMAINDER, default=[])
 
     p_backups = sub.add_parser("backups",
                                help="list backups in a backup archive (milvus-backup list; --detail adds meta)")
-    p_backups.add_argument("--backup-bin", default="./milvus-backup")
-    p_backups.add_argument("--backup-workdir", default=".")
-    p_backups.add_argument("--backup-config", required=True, metavar="PATH",
+    p_backups.add_argument("--cluster", default=None, metavar="NAME",
+                           help="config-file cluster whose backup_config archive to list "
+                                "(alternative to --backup-config)")
+    p_backups.add_argument("--backup-bin", default=None)
+    p_backups.add_argument("--backup-workdir", default=None)
+    p_backups.add_argument("--backup-config", default=None, metavar="PATH",
                            help="milvus-backup config whose archive bucket to list")
+    p_backups.add_argument("--config", default=None, metavar="PATH",
+                           help="ternctl config file (default ~/.ternctl.yaml)")
     p_backups.add_argument("--detail", action="store_true",
                            help="also read each backup's meta: size / milvus version / "
                                 "state / collections (one extra archive read per backup)")
@@ -193,12 +238,13 @@ def build_parser():
                            help="the cluster to restore into (config NAME or NAME=URI)")
     p_restore.add_argument("--config", default=None, metavar="PATH",
                            help="ternctl config file (default ~/.ternctl.yaml)")
-    rg = p_restore.add_argument_group("milvus-backup")
-    rg.add_argument("--backup-bin", default="./milvus-backup")
-    rg.add_argument("--backup-workdir", default=".")
+    rg = p_restore.add_argument_group("milvus-backup (optional if set in ~/.ternctl.yaml)")
+    rg.add_argument("--backup-bin", default=None)
+    rg.add_argument("--backup-workdir", default=None)
     rg.add_argument("--backup-name", required=True, help="name of the backup to restore")
-    rg.add_argument("--backup-config", required=True, metavar="PATH",
-                    help="milvus-backup config pointing at the target cluster")
+    rg.add_argument("--backup-config", default=None, metavar="PATH",
+                    help="milvus-backup config pointing at the target cluster; "
+                         "default: the --cluster's backup_config")
     rg.add_argument("--restore-suffix", default=None, metavar="SUFFIX",
                     help="restore into NEW collections named <original><suffix> "
                          "(leaves the originals untouched — safest for rollback/compare)")
@@ -224,7 +270,18 @@ def build_parser():
     c_add.add_argument("--pchannel-num", type=int, default=None)
     c_add.add_argument("--cdc-metrics", default=None, metavar="URL",
                        help="this cluster's CDC pod /metrics endpoint (for status lag)")
+    c_add.add_argument("--backup-config", default=None, metavar="PATH",
+                       help="this cluster's milvus-backup config yaml (lets rebuild/"
+                            "backup/restore/backups omit --backup-config*)")
+    c_add.add_argument("--kafka-brokers", default=None, metavar="HOSTS",
+                       help="this cluster's Kafka bootstrap hosts (lets salvage omit "
+                            "--kafka-brokers)")
     c_add.add_argument("--config", default=None, metavar="PATH")
+    c_def = csub.add_parser("set-defaults",
+                            help="set environment-wide defaults (milvus-backup bin / workdir)")
+    c_def.add_argument("--backup-bin", default=None, metavar="PATH")
+    c_def.add_argument("--backup-workdir", default=None, metavar="PATH")
+    c_def.add_argument("--config", default=None, metavar="PATH")
     c_list = csub.add_parser("list", help="list configured clusters")
     c_list.add_argument("--config", default=None, metavar="PATH")
     c_show = csub.add_parser("show", help="print the raw config file (YAML)")
@@ -235,11 +292,24 @@ def build_parser():
 
     p_salvage = sub.add_parser("salvage",
                                help="recover WAL messages from Kafka using a salvage checkpoint")
-    p_salvage.add_argument("--source-pchannel", required=True, metavar="TOPIC",
-                           help="the SOURCE Kafka topic to read (= the old primary's pchannel "
-                                "name, e.g. cluster-a-rootcoord-dml_0)")
-    p_salvage.add_argument("--kafka-brokers", required=True, metavar="HOSTS",
-                           help="source Kafka brokers, e.g. host1:9092,host2:9092")
+    p_salvage.add_argument("--source-cluster", default=None, metavar="NAME",
+                           help="config-file name of the OLD PRIMARY. Without "
+                                "--source-pchannel this sweeps ALL its pchannels "
+                                "(dml_0..N-1) in one run — one output file each — and "
+                                "takes kafka brokers from the cluster's kafka_brokers "
+                                "config field")
+    p_salvage.add_argument("--source-pchannel", default=None, metavar="TOPIC",
+                           help="a single SOURCE Kafka topic to read (e.g. "
+                                "cluster-a-rootcoord-dml_0); omit to sweep all "
+                                "pchannels of --source-cluster")
+    p_salvage.add_argument("--kafka-brokers", default=None, metavar="HOSTS",
+                           help="source Kafka brokers, e.g. host1:9092,host2:9092 "
+                                "(default: --source-cluster's kafka_brokers config field)")
+    p_salvage.add_argument("--output-dir", default=None, metavar="DIR",
+                           help="sweep mode: directory for per-pchannel jsonl files "
+                                "(salvage_dml_<i>.jsonl)")
+    p_salvage.add_argument("--config", default=None, metavar="PATH",
+                           help="ternctl config file (default ~/.ternctl.yaml)")
     p_salvage.add_argument("--from-checkpoint-file", default=None, metavar="PATH",
                            help="salvage checkpoint JSON from `ternctl force-promote "
                                 "--salvage-source-cluster-id`. RECOMMENDED — works after "
@@ -310,32 +380,41 @@ def run_command(args, parser):
             do_salvage(args)
             return
 
-        if args.command == "backup":
-            do_backup(args)
-            return
-
-        if args.command == "restore":
-            do_restore(args)
-            return
-
-        if args.command == "backups":
-            do_backups(args)
+        if args.command in ("backup", "restore", "backups"):
+            # --backup-config / bin / workdir resolvable from the config file.
+            if args.command == "backups" and not args.cluster and not args.backup_config:
+                raise RuntimeError("give --cluster NAME (config file) or --backup-config PATH")
+            config = load_config(getattr(args, "config", None))
+            cid = (args.cluster or "").split("=", 1)[0].strip() or None
+            fill_backup_args(args, config, up_cid=cid)
+            if args.command == "backup":
+                do_backup(args)
+            elif args.command == "restore":
+                do_restore(args)
+            else:
+                do_backups(args)
             return
 
         if args.command == "topology":
             do_topology(args)
             return
 
-        if args.command == "status" and not args.downstream:
+        if args.command in ("status", "verify") and not args.downstream:
             config = load_config(getattr(args, "config", None))
             upstream = resolve_cluster("upstream", args.upstream, config,
                                        inter=args.upstream_inter, token=args.token,
                                        pchannel_num=args.pchannel_num)
-            do_status_all(args, upstream, config)
+            ok = for_each_downstream(args, upstream, config,
+                                     do_status if args.command == "status" else verify)
+            if args.command == "verify":
+                sys.exit(0 if ok else 1)
             return
 
         upstream, downstream = clusters_from_args(args)
         if args.command == "rebuild":
+            config = load_config(getattr(args, "config", None))
+            fill_backup_args(args, config,
+                             up_cid=upstream.cluster_id, down_cid=downstream.cluster_id)
             do_rebuild(args, upstream, downstream)
         elif args.command == "switchover":
             do_switchover(args, upstream, downstream)
@@ -362,7 +441,8 @@ def _subparser_choices(parser):
 
 
 # Flags whose VALUE is a cluster name from the config file.
-_CLUSTER_VALUE_FLAGS = {"--cluster", "--clusters", "--upstream", "--downstream", "--target"}
+_CLUSTER_VALUE_FLAGS = {"--cluster", "--clusters", "--upstream", "--downstream",
+                        "--target", "--source-cluster"}
 
 
 def _completion_candidates(parser, buf):
@@ -408,7 +488,7 @@ def _completion_candidates(parser, buf):
                         if n.startswith(tail) and n != tail and n not in used]
             cands = names
         elif prev_toks[0] == "config" and len(prev_toks) == 1:
-            cands = ["add", "list", "show", "remove"]
+            cands = ["add", "list", "show", "remove", "set-defaults"]
         else:
             sub = choices[prev_toks[0]]
             cands = sorted({o for a in sub._actions for o in a.option_strings
