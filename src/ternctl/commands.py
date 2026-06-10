@@ -29,12 +29,26 @@ def merged_replicate_config(upstream, downstream):
     would silently tear down a→b. Existing cluster defs other than the two
     endpoints are kept verbatim; the endpoints' defs are rebuilt fresh (their
     uri/token may have changed)."""
+    config = load_config(None)
     keep_clusters, edges = [], []
     try:
         cur = get_replicate_view(upstream)
-        keep_clusters = [c for c in cur.clusters
-                         if c.cluster_id not in (upstream.cluster_id,
-                                                 downstream.cluster_id)]
+        for c in cur.clusters:
+            if c.cluster_id in (upstream.cluster_id, downstream.cluster_id):
+                continue
+            # GetReplicateConfiguration REDACTS credentials, so sending a
+            # carried def back verbatim trips server-side validation
+            # ("connection_param.token cannot be changed"). Rebuild carried
+            # defs from our own config file whenever we know the cluster.
+            if c.cluster_id in config:
+                keep_clusters.append(
+                    resolve_cluster("peer", c.cluster_id, config).milvus_cluster())
+            else:
+                keep_clusters.append(c)
+                warn(f"carrying cluster '{c.cluster_id}' verbatim from the live "
+                     f"view — its token is redacted there, so the apply may be "
+                     f"rejected. Add it to the config file first: "
+                     f"ternctl config add {c.cluster_id} --uri ... [--token ...]")
         edges = [(t.source_cluster_id, t.target_cluster_id)
                  for t in cur.cross_cluster_topology]
     except RuntimeError:
