@@ -126,13 +126,6 @@ def build_parser():
     add_backup(p_rebuild)
     p_rebuild.add_argument("--verify", action="store_true")
     p_rebuild.add_argument("--collections", default=None)
-    p_rebuild.add_argument("--clean-target", action="store_true",
-                           help="if the target already holds data for source "
-                                "collections, detach the upstream→target edge (other "
-                                "edges untouched) and drop those collections on the "
-                                "target before restoring. Without this flag a dirty "
-                                "target is refused (restore APPENDS — rebuilding over "
-                                "existing data duplicates every row).")
 
     p_switch = sub.add_parser("switchover", help="reverse topology (graceful promote)")
     add_common(p_switch)

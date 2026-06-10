@@ -90,85 +90,22 @@ def _overlapping_nonempty(upstream, downstream):
     return out
 
 
-def merged_replicate_config_minus(upstream, exclude_id):
-    """The upstream's current topology with the upstream→exclude_id edge
-    removed — detach ONE downstream, keep all other edges. Cluster defs are
-    kept only for clusters still participating in a remaining edge (a def
-    with no incoming edge counts as a primary, and the validator rejects
-    'primary count is not 1'); carried defs are rebuilt from the config file
-    (the live view redacts tokens)."""
-    config = load_config(None)
-    cur = get_replicate_view(upstream)
-    edges = [(t.source_cluster_id, t.target_cluster_id)
-             for t in cur.cross_cluster_topology
-             if not (t.source_cluster_id == upstream.cluster_id
-                     and t.target_cluster_id == exclude_id)]
-    participants = {upstream.cluster_id} | {c for e in edges for c in e}
-    clusters = [upstream.milvus_cluster()]
-    for c in cur.clusters:
-        if c.cluster_id == upstream.cluster_id or c.cluster_id not in participants:
-            continue
-        if c.cluster_id in config:
-            clusters.append(resolve_cluster("peer", c.cluster_id, config).milvus_cluster())
-        else:
-            clusters.append(c)
-    return common_pb2.ReplicateConfiguration(
-        clusters=clusters,
-        cross_cluster_topology=[
-            common_pb2.CrossClusterTopology(source_cluster_id=s, target_cluster_id=t)
-            for (s, t) in edges],
-    )
-
-
-def _clean_target(upstream, downstream, overlap):
-    """Make the target actually empty: detach the upstream→target edge if one
-    exists (other edges untouched), then drop the overlapping collections on
-    the target — retrying while the detach broadcast flips it to independent
-    (a standby rejects DDL)."""
-    try:
-        cur = get_replicate_view(upstream)
-        has_edge = any(t.source_cluster_id == upstream.cluster_id
-                       and t.target_cluster_id == downstream.cluster_id
-                       for t in cur.cross_cluster_topology)
-    except RuntimeError:
-        has_edge = False
-    if has_edge:
-        apply_replicate_config(
-            upstream, merged_replicate_config_minus(upstream, downstream.cluster_id),
-            _quiet=True)
-    cli = _milvus_client(downstream)
-    for name, _ in overlap:
-        last = None
-        for _attempt in range(12):
-            try:
-                cli.drop_collection(name)
-                last = None
-                break
-            except Exception as e:  # standby rejects DDL until the detach lands
-                last = e
-                time.sleep(5)
-        if last is not None:
-            raise RuntimeError(
-                f"could not drop '{name}' on {downstream.cluster_id} after 60s: {last}")
-
-
 def do_rebuild(args, upstream, downstream):
     header("REBUILD",
            f"source: {_cyan(upstream.cluster_id)} ({upstream.uri})\n"
            f"target: {_cyan(downstream.cluster_id)} ({downstream.uri})")
+    # Read-only guard, nothing has been mutated yet. ternctl NEVER touches the
+    # target's data: emptying a dirty target is the operator's decision, made
+    # outside this command. We only refuse to make it worse — restore APPENDS
+    # into existing collections, so rebuilding over them duplicates every row.
     overlap = _overlapping_nonempty(upstream, downstream)
-    if overlap and not getattr(args, "clean_target", False):
+    if overlap:
         listed = ", ".join(f"{n} ({r} rows)" for n, r in overlap)
         raise RuntimeError(
             f"target {downstream.cluster_id} already holds data for source "
             f"collections: {listed}. restore APPENDS into existing collections "
-            f"— rebuilding now would duplicate every row. Re-run with "
-            f"--clean-target to have ternctl detach the edge (if any) and drop "
-            f"these collections on {downstream.cluster_id} first.")
-    if overlap:
-        step("0/4", f"clean target ({len(overlap)} collection(s))")
-        _clean_target(upstream, downstream, overlap)
-        done(extra="dropped: " + ", ".join(n for n, _ in overlap))
+            f"— rebuilding now would duplicate every row. rebuild requires an "
+            f"EMPTY target; ternctl will not delete target data for you.")
     step("1/4", "snapshot primary"); backup_create(args); done()
     step("2/4", "register topology on target")
     # Merge, don't replace: keeps any existing edges (e.g. a→b) intact when
