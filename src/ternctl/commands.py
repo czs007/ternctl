@@ -318,6 +318,50 @@ def do_backups(args):
               f"  {_dim('collections=')}{','.join(cols) or '-'}")
 
 
+def do_status_all(args, upstream, config):
+    """`status --upstream X` with no --downstream: discover X's downstreams
+    from its own replicate configuration and run status against each one.
+    Downstream URIs come from the config file — a discovered cluster_id that
+    isn't configured there is reported and skipped."""
+    rpc_timeout = getattr(args, "rpc_timeout", None) or RPC_TIMEOUT
+    rpc_tries = getattr(args, "rpc_retries", None) or RPC_RETRIES
+
+    def _call(timeout):
+        stub, ch = upstream.stub()
+        try:
+            return stub.GetReplicateConfiguration(
+                milvus_pb2.GetReplicateConfigurationRequest(),
+                metadata=auth_metadata(upstream.token), timeout=timeout)
+        finally:
+            ch.close()
+    try:
+        resp = call_with_retry(_call, tries=rpc_tries, timeout=rpc_timeout)
+    except grpc.RpcError as e:
+        raise RuntimeError(
+            f"cannot discover downstreams of {upstream.cluster_id}: "
+            f"GetReplicateConfiguration failed ({e.code().name if hasattr(e, 'code') else e})")
+
+    targets = [t.target_cluster_id
+               for t in resp.configuration.cross_cluster_topology
+               if t.source_cluster_id == upstream.cluster_id]
+    if not targets:
+        warn(f"{upstream.cluster_id} has no outgoing replication edges — "
+             f"nothing to status. (It is INDEPENDENT or itself a standby; "
+             f"run `ternctl topology` to see the full picture.)")
+        return
+    info(f"downstreams of {upstream.cluster_id} (from its replicate config): "
+         + ", ".join(targets))
+    for tcid in targets:
+        if tcid not in config:
+            warn(f"downstream '{tcid}' is not in the config file — skipped. "
+                 f"Add it: ternctl config add {tcid} --uri http://...:19530")
+            continue
+        downstream = resolve_cluster("downstream", tcid, config,
+                                     token=args.token,
+                                     pchannel_num=args.pchannel_num)
+        do_status(args, upstream, downstream)
+
+
 def do_config(args):
     """Manage the cluster config file (~/.ternctl.yaml) — kubectl-config style."""
     cmd = args.config_command

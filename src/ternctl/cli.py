@@ -8,20 +8,24 @@ from .config import load_config, resolve_cluster
 from .verify import verify
 from .commands import (do_rebuild, do_switchover, do_force_promote, do_status,
                        do_config, do_topology, do_replicate_config, do_break_topology,
-                       do_backup, do_restore, do_clusters, do_backups)
+                       do_backup, do_restore, do_clusters, do_backups,
+                       do_status_all)
 from .salvage import do_salvage
 
 
 # --------------------------------------------------------------------------- #
 # CLI
 # --------------------------------------------------------------------------- #
-def add_common(p):
+def add_common(p, downstream_required=True):
     g = p.add_argument_group("clusters (NAME from config file, or NAME=URI inline)")
     g.add_argument("--upstream", required=True, metavar="NAME[=URI]",
                    help="source cluster: a name from ~/.ternctl.yaml, or inline "
                         "NAME=URI (e.g. cluster-a=http://127.0.0.1:19530)")
-    g.add_argument("--downstream", required=True, metavar="NAME[=URI]",
-                   help="target cluster (same NAME or NAME=URI form)")
+    g.add_argument("--downstream", required=downstream_required, metavar="NAME[=URI]",
+                   help="target cluster (same NAME or NAME=URI form)"
+                        + ("" if downstream_required else
+                           "; omit to auto-discover ALL downstreams of --upstream "
+                           "from its replicate configuration"))
     g.add_argument("--upstream-inter", default=None, metavar="URI",
                    help="override the upstream's inter-cluster URI")
     g.add_argument("--downstream-inter", default=None, metavar="URI",
@@ -113,7 +117,7 @@ def build_parser():
                          "Default: ./salvage_checkpoint_<target>_<unix_ts>.json")
 
     p_status = sub.add_parser("status", help="dump replication checkpoints")
-    add_common(p_status)
+    add_common(p_status, downstream_required=False)
     add_rpc_opts(p_status)
     p_status.add_argument("--upstream-cdc-metrics", "--up-cdc", default=None, metavar="URL",
                           dest="upstream_cdc_metrics",
@@ -320,6 +324,14 @@ def run_command(args, parser):
 
         if args.command == "topology":
             do_topology(args)
+            return
+
+        if args.command == "status" and not args.downstream:
+            config = load_config(getattr(args, "config", None))
+            upstream = resolve_cluster("upstream", args.upstream, config,
+                                       inter=args.upstream_inter, token=args.token,
+                                       pchannel_num=args.pchannel_num)
+            do_status_all(args, upstream, config)
             return
 
         upstream, downstream = clusters_from_args(args)
