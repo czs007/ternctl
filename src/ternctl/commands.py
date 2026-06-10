@@ -90,6 +90,37 @@ def _overlapping_nonempty(upstream, downstream):
     return out
 
 
+def merged_replicate_config_minus(upstream, exclude_id):
+    """The upstream's current topology with ONLY the upstream→exclude_id edge
+    removed — other downstream edges survive. Cluster defs are kept only for
+    clusters still participating in a remaining edge (an edge-less def counts
+    as a primary and trips the 'primary count is not 1' validator); carried
+    defs are rebuilt from the config file (the live view redacts tokens).
+    Removing the LAST edge naturally degenerates to the independent config
+    (clusters=[upstream], topology=[]) — the correct single-pair behavior."""
+    config = load_config(None)
+    cur = get_replicate_view(upstream)
+    edges = [(t.source_cluster_id, t.target_cluster_id)
+             for t in cur.cross_cluster_topology
+             if not (t.source_cluster_id == upstream.cluster_id
+                     and t.target_cluster_id == exclude_id)]
+    participants = {upstream.cluster_id} | {c for e in edges for c in e}
+    clusters = [upstream.milvus_cluster()]
+    for c in cur.clusters:
+        if c.cluster_id == upstream.cluster_id or c.cluster_id not in participants:
+            continue
+        if c.cluster_id in config:
+            clusters.append(resolve_cluster("peer", c.cluster_id, config).milvus_cluster())
+        else:
+            clusters.append(c)
+    return common_pb2.ReplicateConfiguration(
+        clusters=clusters,
+        cross_cluster_topology=[
+            common_pb2.CrossClusterTopology(source_cluster_id=s, target_cluster_id=t)
+            for (s, t) in edges],
+    )
+
+
 def do_rebuild(args, upstream, downstream):
     header("REBUILD",
            f"source: {_cyan(upstream.cluster_id)} ({upstream.uri})\n"
@@ -715,16 +746,17 @@ def do_replicate_config(args, upstream, downstream):
 
 
 def do_break_topology(args, upstream, downstream):
-    """Tear down a single-edge replication topology by applying an independent
-    config to the PRIMARY side only.
+    """Remove ONE replication edge (upstream→downstream), leaving the
+    upstream's other downstream edges intact.
 
     Mechanism (verified end-to-end against milvus v2.6.18):
-    - Apply `clusters=[primary]`, `topology=[]`, `force_promote=False` on the
-      primary cluster. Milvus accepts: a primary is allowed to clear its
-      outbound edge by becoming independent.
-    - The change BROADCASTS to all clusters in the prior topology. The old
-      secondary (downstream) automatically transitions to independent primary
-      too — no second call needed.
+    - Apply the upstream's current topology MINUS this edge on the upstream
+      (full-state replacement API — see merged_replicate_config_minus). With
+      no edges left this is the independent config (`clusters=[primary]`,
+      `topology=[]`), which milvus accepts: a primary may clear its outbound
+      edge by becoming independent.
+    - The change BROADCASTS along the existing streams; the removed secondary
+      automatically transitions to independent primary — no second call needed.
     - Calling `force_promote=True` on the old secondary AFTER step 1 is
       rejected with "current cluster is primary" — because by then it
       already IS independent primary.
@@ -741,12 +773,23 @@ def do_break_topology(args, upstream, downstream):
     header("BREAK TOPOLOGY",
            f"primary:   {_cyan(upstream.cluster_id)}\n"
            f"secondary: {_cyan(downstream.cluster_id)}\n"
-           f"{_yel('⚠')} DELETES the edge — use only for teardown, not as a pause")
-    step("1/1", f"apply independent config on primary ({upstream.cluster_id})")
-    apply_replicate_config(upstream, independent_replicate_config(upstream),
-                           force_promote=False, _quiet=True); done()
+           f"{_yel('⚠')} DELETES this edge — use only for teardown, not as a pause")
+    # Remove ONLY the named edge. UpdateReplicateConfiguration is full-state
+    # replacement, so the old independent-config approach wiped the primary's
+    # ENTIRE topology — with multiple downstreams (a→b plus a→c), breaking
+    # a→b silently destroyed a→c as well. The minus-config keeps other edges.
+    minus = merged_replicate_config_minus(upstream, downstream.cluster_id)
+    remaining = [(t.source_cluster_id, t.target_cluster_id)
+                 for t in minus.cross_cluster_topology]
+    step("1/1", f"apply topology minus {upstream.cluster_id}→{downstream.cluster_id} "
+                f"on {upstream.cluster_id}")
+    apply_replicate_config(upstream, minus, force_promote=False, _quiet=True); done()
     header("DONE")
-    info(f"edge {upstream.cluster_id} → {downstream.cluster_id} removed")
-    info("both clusters auto-transition to independent primary (broadcast)")
+    info(f"edge {upstream.cluster_id} → {downstream.cluster_id} removed; "
+         f"{downstream.cluster_id} auto-transitions to independent (broadcast)")
+    if remaining:
+        info("untouched edges: " + ", ".join(f"{s}→{t}" for s, t in remaining))
+    else:
+        info(f"that was the last edge — {upstream.cluster_id} is now independent too")
 
 
