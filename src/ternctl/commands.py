@@ -586,20 +586,36 @@ def do_topology(args):
         for (s, t), reporters in sorted(all_edges.items()):
             print(f"    {_bold(s + ' → ' + t)}   {_dim('reported by ' + ', '.join(sorted(reporters)))}")
 
-    # Consistency: do reachable clusters agree on the edge set?
-    reachable = {cid: frozenset(v["edges"]) for cid, v in views.items() if v["error"] is None}
+    # Consistency: every reported edge must be confirmed by BOTH of its
+    # endpoints. A reachable cluster with no edges that no edge involves is
+    # simply not part of the topology (INDEPENDENT) — that is NOT a
+    # disagreement; only an endpoint denying an edge someone reports is.
+    # (That's exactly what a residual edge from an interrupted
+    # force-promote/teardown looks like.)
+    reachable = {cid: set(v["edges"]) for cid, v in views.items() if v["error"] is None}
     print()
     if not reachable:
         warn("no reachable clusters")
-    elif len(set(reachable.values())) <= 1:
-        kv("consistency", "all reachable clusters agree on the topology", _green)
-    else:
+        return
+    conflicts = []
+    for (s, t), reporters in sorted(all_edges.items()):
+        for endpoint in (s, t):
+            if endpoint in reachable and (s, t) not in reachable[endpoint]:
+                conflicts.append(
+                    f"{endpoint} is an endpoint of {s} → {t} (reported by "
+                    f"{', '.join(sorted(reporters))}) but does not report it")
+    if conflicts:
         warn("clusters DISAGREE on the topology — likely a residual edge from an "
              "interrupted force-promote/teardown (a cluster still pointing at a "
              "now-independent peer keeps retrying it).")
-        for cid, es in reachable.items():
+        for line in conflicts:
+            print(f"    {line}")
+        for cid, es in sorted(reachable.items()):
             shown = ", ".join(f"{s}→{t}" for (s, t) in sorted(es)) or "independent"
-            print(f"    {cid}: {shown}")
+            print(f"    {_dim(cid + ': ' + shown)}")
+    else:
+        kv("consistency",
+           "consistent — every edge is confirmed by both of its endpoints", _green)
 
 
 def do_replicate_config(args, upstream, downstream):
