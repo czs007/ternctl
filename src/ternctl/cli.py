@@ -129,9 +129,10 @@ def build_parser():
     p_topo.add_argument("--cluster", action="append", default=None, metavar="NAME[=URI]",
                         help="a cluster to query: a config NAME or inline NAME=URI "
                              "(repeat for each cluster, or use --clusters)")
-    p_topo.add_argument("--clusters", default=None, metavar="N1,N2,N3",
-                        help="comma-separated cluster names from the config file "
-                             "(shorthand for repeating --cluster)")
+    p_topo.add_argument("--clusters", default=None, nargs="+", metavar="N1,N2,N3",
+                        help="cluster names from the config file, separated by "
+                             "commas and/or spaces (shorthand for repeating "
+                             "--cluster). 'a,b,c', 'a, b, c' and 'a b c' all work.")
     p_topo.add_argument("--pchannel-num", type=int, default=None)
     p_topo.add_argument("--token", default=None)
     p_topo.add_argument("--config", default=None, metavar="PATH",
@@ -314,6 +315,14 @@ def run_command(args, parser):
         sys.exit(1)
 
 
+def _subparser_choices(parser):
+    """Map of subcommand name -> its subparser, for `help <cmd>` in the REPL."""
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            return action.choices
+    return {}
+
+
 def run_repl(parser):
     """Interactive shell: run subcommands without re-typing the launcher each time.
     Uses stdlib only — readline (if present) gives history + line editing."""
@@ -338,13 +347,21 @@ def run_repl(parser):
             continue
         if line in ("exit", "quit", "q"):
             break
-        if line in ("help", "?"):
-            parser.print_help()
-            continue
         try:
             argv = shlex.split(line)
         except ValueError as e:
             print(f"  {_red('parse error')}: {e}")
+            continue
+        if argv and argv[0] in ("help", "?", "h"):
+            # `help` → top-level usage; `help <subcommand>` → that command's help.
+            choices = _subparser_choices(parser)
+            if len(argv) > 1 and argv[1] in choices:
+                choices[argv[1]].print_help()
+            elif len(argv) > 1:
+                print(f"  {_red('no such command')}: {argv[1]} "
+                      f"(try {_bold('help')} for the list)")
+            else:
+                parser.print_help()
             continue
         if argv and argv[0] == "repl":
             print("  already in the shell")

@@ -311,7 +311,11 @@ def do_topology(args):
     config = load_config(getattr(args, "config", None))
     cluster_specs = list(args.cluster or [])
     if args.clusters:
-        cluster_specs += [c.strip() for c in args.clusters.split(",") if c.strip()]
+        # --clusters is nargs="+", so it arrives as a list of tokens; tolerate
+        # commas AND/OR spaces between names ('a,b,c', 'a, b, c', 'a b c').
+        raw = args.clusters if isinstance(args.clusters, list) else [args.clusters]
+        for tok in raw:
+            cluster_specs += [c.strip() for c in tok.replace(",", " ").split() if c.strip()]
     if not cluster_specs:
         print(f"  {_red('✗')} give clusters via --cluster NAME (repeatable) or "
               f"--clusters n1,n2,n3", file=sys.stderr)
