@@ -33,6 +33,18 @@ def add_common(p):
                    help="config file path (default ~/.ternctl.yaml)")
 
 
+def add_rpc_opts(p):
+    g = p.add_argument_group("replication-RPC retry (topology/status)")
+    g.add_argument("--rpc-timeout", type=float, default=None, metavar="SECONDS",
+                   help="per-attempt timeout for GetReplicateConfiguration / "
+                        "GetReplicateInfo (default 3s). These RPCs hang to the "
+                        "deadline on INDEPENDENT clusters; a short timeout + retry "
+                        "avoids false 'unreachable'. See milvus-io/milvus#50344.")
+    g.add_argument("--rpc-retries", type=int, default=None, metavar="N",
+                   help="how many short-timeout attempts before declaring a "
+                        "cluster unreachable (default 6)")
+
+
 def add_backup(p):
     g = p.add_argument_group("milvus-backup")
     g.add_argument("--backup-bin", default="./milvus-backup")
@@ -102,6 +114,7 @@ def build_parser():
 
     p_status = sub.add_parser("status", help="dump replication checkpoints")
     add_common(p_status)
+    add_rpc_opts(p_status)
     p_status.add_argument("--upstream-cdc-metrics", "--up-cdc", default=None, metavar="URL",
                           dest="upstream_cdc_metrics",
                           help="override the UPSTREAM (source) cluster's CDC pod metrics "
@@ -123,6 +136,7 @@ def build_parser():
     p_topo.add_argument("--token", default=None)
     p_topo.add_argument("--config", default=None, metavar="PATH",
                         help="config file path (default ~/.ternctl.yaml)")
+    add_rpc_opts(p_topo)
 
     p_verify = sub.add_parser("verify", help="compare row counts")
     add_common(p_verify)

@@ -13,7 +13,8 @@ from .cluster import pchannels_of, auth_metadata
 from .config import load_config, save_config, resolve_cluster, config_path
 from .replication import (build_replicate_config, apply_replicate_config,
                           independent_replicate_config, get_replicate_checkpoints, fetch_cdc_latency,
-                          prefetch_salvage_checkpoints)
+                          prefetch_salvage_checkpoints, call_with_retry,
+                          RPC_RETRIES, RPC_TIMEOUT)
 from .backup import backup_create, restore_secondary, restore_backup
 from .verify import verify
 
@@ -182,7 +183,10 @@ def do_status(args, upstream, downstream):
     # cannot find a matching pchannel on the target and the request retries
     # forever until context-cancel (looks like a hang from the caller).
     pchannels = pchannels_of(downstream.cluster_id, downstream.pchannel_num)
-    ticks = get_replicate_checkpoints(downstream, upstream.cluster_id, pchannels)
+    ticks = get_replicate_checkpoints(
+        downstream, upstream.cluster_id, pchannels,
+        rpc_tries=getattr(args, "rpc_retries", None) or RPC_RETRIES,
+        rpc_timeout=getattr(args, "rpc_timeout", None) or RPC_TIMEOUT)
     if not ticks:
         warn("no replication info available (not started, or API unsupported)")
         return
@@ -332,14 +336,27 @@ def do_topology(args):
                  f"ports, e.g. 19530/19531/19532). Results below are unreliable.")
         seen[addr] = cid
 
+    # Short-timeout + retry: GetReplicateConfiguration hangs to the client
+    # deadline on INDEPENDENT clusters, so a single long-timeout call randomly
+    # looks "unreachable". See replication.call_with_retry / milvus#50344.
+    rpc_timeout = getattr(args, "rpc_timeout", None) or RPC_TIMEOUT
+    rpc_tries = getattr(args, "rpc_retries", None) or RPC_RETRIES
+
     views = {}  # cid -> {"edges": [(s,t)], "clusters": [...], "error": str|None}
     for cl in resolved:
         cid = cl.cluster_id
-        stub, ch = cl.stub()
+        # Fresh channel PER attempt: a call that deadlines out poisons its
+        # HTTP/2 connection, so reusing one channel makes every retry fail too.
+        def _call(timeout, _cl=cl):
+            stub, ch = _cl.stub()
+            try:
+                return stub.GetReplicateConfiguration(
+                    milvus_pb2.GetReplicateConfigurationRequest(),
+                    metadata=auth_metadata(_cl.token), timeout=timeout)
+            finally:
+                ch.close()
         try:
-            resp = stub.GetReplicateConfiguration(
-                milvus_pb2.GetReplicateConfigurationRequest(),
-                metadata=auth_metadata(cl.token), timeout=10)
+            resp = call_with_retry(_call, tries=rpc_tries, timeout=rpc_timeout)
             cfg = resp.configuration
             views[cid] = {
                 "clusters": [x.cluster_id for x in cfg.clusters],
@@ -350,8 +367,6 @@ def do_topology(args):
         except grpc.RpcError as e:
             views[cid] = {"clusters": [], "edges": [],
                           "error": e.code().name if hasattr(e, "code") else str(e)[:40]}
-        finally:
-            ch.close()
 
     # Per-cluster role, derived from each cluster's OWN view.
     for cid, _ in specs:
