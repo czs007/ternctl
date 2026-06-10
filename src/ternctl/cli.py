@@ -201,7 +201,15 @@ def build_parser():
     p_repl = sub.add_parser("replicate-config", help="raw inittarget equivalent")
     add_common(p_repl)
     p_repl.add_argument("--direction", choices=["up2down", "down2up"], default="up2down")
-    p_repl.add_argument("--target", choices=["upstream", "downstream", "both"], default="both")
+    p_repl.add_argument("--target", choices=["upstream", "downstream", "both"], default="both",
+                        help="which cluster(s) to send the RPC to. Only the config's "
+                             "PRIMARY actually executes the change (it broadcasts the "
+                             "AlterReplicateConfigMessage into its WAL; the config then "
+                             "reaches standbys via CDC itself). Sending to a standby is "
+                             "a convergence BARRIER: the RPC blocks until the config has "
+                             "arrived and matches. 'both' = source first (execute), then "
+                             "target (confirm) — the strong-consistency pattern from the "
+                             "CDC reference doc.")
     p_repl.add_argument("--merge", action="store_true",
                         help="merge the edge into the source's CURRENT topology "
                              "instead of replacing it (UpdateReplicateConfiguration "

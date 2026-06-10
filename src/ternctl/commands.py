@@ -740,7 +740,16 @@ def do_replicate_config(args, upstream, downstream):
         config = merged_replicate_config(source, target)
     else:
         config = build_replicate_config(upstream, downstream, source=source, target=target)
-    targets = {"upstream": [upstream], "downstream": [downstream], "both": [downstream, upstream]}[args.target]
+    # Order for "both": SOURCE first, TARGET second. Per the CDC design, only
+    # the primary actually executes the change (broadcasts the
+    # AlterReplicateConfigMessage into its WAL); the call to a standby is a
+    # convergence BARRIER — it blocks until the config has arrived via CDC and
+    # matches. Calling the standby first on an established topology would wait
+    # on a change that hasn't been issued yet. (A still-INDEPENDENT target
+    # accepts the config directly — bootstrap path — so this order is safe
+    # there too.)
+    targets = {"upstream": [upstream], "downstream": [downstream],
+               "both": [source, target]}[args.target]
     for cluster in targets:
         apply_replicate_config(cluster, config)
 
