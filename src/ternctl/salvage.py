@@ -351,6 +351,40 @@ def _salvage_one(args):
         kafka_kwargs["security_protocol"] = "SSL"
 
     consumer = KafkaConsumer(**kafka_kwargs)
+
+    # Fail fast on the advertised-listener trap. A Kafka client connects to
+    # bootstrap_servers, then RE-connects to whatever address the broker
+    # advertises in its metadata. If that advertised address is unreachable
+    # from this host (typical for an in-cluster broker advertising cluster
+    # DNS), the bootstrap succeeds but every fetch silently fails — the dump
+    # "completes" with 0 messages, which in a real DR reads as "nothing was
+    # stranded". Refuse loudly instead. (SETUP §5.6 has the kind-local fix:
+    # override the INTERNAL advertised listener + matching port-forward.)
+    try:
+        consumer.topics()  # force a metadata fetch
+        brokers = list(consumer._client.cluster.brokers())
+        dead = []
+        for b in brokers:
+            try:
+                import socket
+                with socket.create_connection((b.host, b.port), timeout=3):
+                    pass
+            except OSError:
+                dead.append(f"{b.host}:{b.port}")
+        if brokers and len(dead) == len(brokers):
+            consumer.close()
+            raise RuntimeError(
+                "broker metadata advertises address(es) UNREACHABLE from this "
+                "host: " + ", ".join(dead) + ". Bootstrap connected, but every "
+                "fetch goes to the advertised address — the dump would silently "
+                "return 0 messages. Dial an address identical to what the "
+                "broker advertises (kind-local: SETUP §5.6 listener override + "
+                "port-forward), or run salvage from a host that can reach it.")
+    except RuntimeError:
+        raise
+    except Exception:
+        pass  # the guard itself must never break salvage (private API drift etc.)
+
     tp = TopicPartition(args.source_pchannel, 0)
     consumer.assign([tp])
     consumer.seek(tp, start_offset)
