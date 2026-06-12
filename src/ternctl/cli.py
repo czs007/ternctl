@@ -35,8 +35,6 @@ def add_common(p, downstream_required=True, upstream_required=True):
                    help="override the upstream's inter-cluster URI")
     g.add_argument("--downstream-inter", default=None, metavar="URI",
                    help="override the downstream's inter-cluster URI")
-    g.add_argument("--pchannel-num", type=int, default=None,
-                   help="override pchannel count (default: config value or 16)")
     g.add_argument("--token", default=None, help="override auth token")
 
 
@@ -108,10 +106,10 @@ def clusters_from_args(args):
     config = load_config(getattr(args, "config", None))
     upstream = resolve_cluster("upstream", args.upstream, config,
                                inter=args.upstream_inter, token=args.token,
-                               pchannel_num=args.pchannel_num)
+                               pchannel_num=getattr(args, "pchannel_num", None))
     downstream = resolve_cluster("downstream", args.downstream, config,
                                  inter=args.downstream_inter, token=args.token,
-                                 pchannel_num=args.pchannel_num)
+                                 pchannel_num=getattr(args, "pchannel_num", None))
     return upstream, downstream
 
 
@@ -143,7 +141,6 @@ def build_parser():
     g.add_argument("--upstream", default=None, metavar="NAME[=URI]",
                    help="optional assertion of the target's current primary — "
                         "errors if it doesn't match (never required)")
-    g.add_argument("--pchannel-num", type=int, default=None)
     g.add_argument("--token", default=None)
     add_rpc_opts(p_switch)
 
@@ -153,7 +150,6 @@ def build_parser():
                    help="the secondary being promoted: a config name, or NAME=URI inline")
     g.add_argument("--target-inter", default=None, metavar="URI",
                    help="override the target's inter-cluster URI")
-    g.add_argument("--pchannel-num", type=int, default=None)
     g.add_argument("--token", default=None)
     p_force.add_argument("--yes", action="store_true", help="skip the RPO confirmation prompt")
     sg = p_force.add_argument_group("salvage checkpoint prefetch (recommended for DR)")
@@ -196,7 +192,6 @@ def build_parser():
                         help="cluster names from the config file, separated by "
                              "commas and/or spaces (shorthand for repeating "
                              "--cluster). 'a,b,c', 'a, b, c' and 'a b c' all work.")
-    p_topo.add_argument("--pchannel-num", type=int, default=None)
     p_topo.add_argument("--token", default=None)
     add_rpc_opts(p_topo)
 
@@ -248,7 +243,6 @@ def build_parser():
                         "you mean. (--upstream alone is deliberately NOT accepted: "
                         "detaching ALL of a primary's standbys in one go is never "
                         "implicit.)")
-    g.add_argument("--pchannel-num", type=int, default=None)
     g.add_argument("--token", default=None)
 
     def _backup_common(p, cluster_required=True, cluster_help="the cluster (config NAME or NAME=URI)"):
@@ -392,7 +386,7 @@ def run_command(args, parser):
             config = load_config(getattr(args, "config", None))
             target = resolve_cluster("target", args.target, config,
                                      inter=args.target_inter, token=args.token,
-                                     pchannel_num=args.pchannel_num)
+                                     pchannel_num=getattr(args, "pchannel_num", None))
             if not args.yes:
                 ans = input(
                     f"\nFORCE-PROMOTE will make '{target.cluster_id}' an independent primary.\n"
@@ -439,10 +433,10 @@ def run_command(args, parser):
         if args.command == "detach":
             config = load_config(getattr(args, "config", None))
             downstream = resolve_cluster("downstream", args.downstream, config,
-                                         token=args.token, pchannel_num=args.pchannel_num)
+                                         token=args.token, pchannel_num=getattr(args, "pchannel_num", None))
             if args.upstream:
                 upstream = resolve_cluster("upstream", args.upstream, config,
-                                           token=args.token, pchannel_num=args.pchannel_num)
+                                           token=args.token, pchannel_num=getattr(args, "pchannel_num", None))
             else:
                 upstream = discover_upstream(args, downstream, config)
             do_detach(args, upstream, downstream)
@@ -454,12 +448,12 @@ def run_command(args, parser):
             if args.upstream:
                 upstream = resolve_cluster("upstream", args.upstream, config,
                                            inter=args.upstream_inter, token=args.token,
-                                           pchannel_num=args.pchannel_num)
+                                           pchannel_num=getattr(args, "pchannel_num", None))
                 ok = for_each_downstream(args, upstream, config, fn)
             elif args.downstream:
                 downstream = resolve_cluster("downstream", args.downstream, config,
                                              inter=args.downstream_inter, token=args.token,
-                                             pchannel_num=args.pchannel_num)
+                                             pchannel_num=getattr(args, "pchannel_num", None))
                 upstream = discover_upstream(args, downstream, config)
                 r = fn(args, upstream, downstream)
                 ok = r is None or bool(r)
