@@ -281,6 +281,9 @@ def build_parser():
                              help="list backups in the archive (--detail adds meta)")
     _backup_common(b_list, cluster_required=False,
                    cluster_help="config-file cluster whose backup_config archive to list")
+    b_list.add_argument("--all", action="store_true",
+                        help="list the WHOLE archive (disable the --cluster source "
+                             "filter); origins are annotated per backup")
     b_list.add_argument("--detail", action="store_true",
                         help="also read each backup's meta: size / milvus version / "
                              "state / collections (one extra archive read per backup)")

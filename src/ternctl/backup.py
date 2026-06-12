@@ -93,6 +93,39 @@ def backup_get_info(args, name):
         return None
 
 
+def _archive_client(args):
+    """Minio client + (bucket, backupRootPath) parsed from the milvus-backup
+    config yaml — for reading raw backup META from the archive (the `get`
+    command omits channel info)."""
+    import yaml
+    from minio import Minio
+    cfg = yaml.safe_load(open(args.backup_config)) or {}
+    m = cfg.get("minio") or {}
+    client = Minio(f"{m.get('address', '127.0.0.1')}:{m.get('port', 9000)}",
+                   access_key=str(m.get("accessKeyID", "")),
+                   secret_key=str(m.get("secretAccessKey", "")),
+                   secure=bool(m.get("useSSL", False)))
+    bucket = m.get("backupBucketName") or m.get("bucketName")
+    root = (m.get("backupRootPath") or "backup").strip("/")
+    return client, bucket, root
+
+
+def backup_source_cluster(args, name):
+    """TRUE source cluster of a backup, read from its raw
+    meta/collection_meta.json — channel names embed the cluster id
+    (<id>-rootcoord-dml_N). Returns None when undeterminable: ghost meta, or
+    a backup of an empty cluster (no collections → no channels recorded)."""
+    try:
+        client, bucket, root = _archive_client(args)
+        data = client.get_object(
+            bucket, f"{root}/{name}/meta/collection_meta.json"
+        ).read().decode("utf-8", "ignore")
+    except Exception:
+        return None
+    mt = re.search(r'"([A-Za-z0-9_\-]+)-rootcoord-dml_\d+', data)
+    return mt.group(1) if mt else None
+
+
 def backup_create(args):
     argv = ["--config", args.backup_config, "create", "-n", args.backup_name]
     if args.backup_index_extra:

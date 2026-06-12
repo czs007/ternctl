@@ -16,7 +16,8 @@ from .replication import (build_replicate_config, apply_replicate_config,
                           prefetch_salvage_checkpoints, call_with_retry,
                           RPC_RETRIES, RPC_TIMEOUT)
 from .backup import (backup_create, restore_secondary, restore_backup,
-                     backup_list_names, backup_get_info, run_backup_capture)
+                     backup_list_names, backup_get_info, run_backup_capture,
+                     backup_source_cluster)
 from .verify import verify
 
 
@@ -473,19 +474,54 @@ def do_clusters(args):
 
 
 def do_backups(args):
-    """List the backups in one backup-config's archive bucket.
-    --detail additionally reads each backup's meta (one `get` per backup)."""
-    header("BACKUPS",
-           f"archive via {_cyan(os.path.basename(args.backup_config))} — holds "
-           f"backups from EVERY cluster writing to it; --cluster picks the "
-           f"config, it does NOT filter (origin lives only in backup names)")
+    """List the archive. With --cluster (and not --all), filter by each
+    backup's TRUE source cluster, read from its raw meta in the archive —
+    channel names embed the cluster id. Undeterminable backups (ghost meta,
+    or empty-cluster snapshots with no channels) are listed, never hidden."""
     names = backup_list_names(args)
+    cl = (getattr(args, "cluster", None) or "").split("=", 1)[0].strip() or None
+    show_all = getattr(args, "all", False)
+    cfg_name = os.path.basename(args.backup_config)
+
+    if cl and not show_all:
+        header("BACKUPS", f"source = {_cyan(cl)} — by recorded META (channel "
+                          f"names), not by backup name. --all lists the whole "
+                          f"shared archive (via {cfg_name})")
+        matched, others, unattributed = [], [], []
+        for n in names:
+            src = backup_source_cluster(args, n)
+            if src == cl:
+                matched.append(n)
+            elif src is None:
+                unattributed.append(n)
+            else:
+                others.append((n, src))
+        for n in matched:
+            print(f"  {_cyan(n)}")
+        if not matched:
+            info(f"no backups recorded as taken from {cl}")
+        if others:
+            info(f"{len(others)} from other clusters (--all to list): "
+                 + ", ".join(f"{n} ({s_})" for n, s_ in others[:3])
+                 + (" …" if len(others) > 3 else ""))
+        if unattributed:
+            warn("source undeterminable (ghost meta, or snapshot of an empty "
+                 "cluster): " + ", ".join(unattributed))
+        return
+
+    header("BACKUPS", f"whole archive via {_cyan(cfg_name)}"
+                      + (" (--all)" if cl and show_all else ""))
     if not names:
         info("no backups found in this archive")
         return
+    annotate = bool(cl and show_all)   # origins cost one meta read per backup
     if not getattr(args, "detail", False):
         for n in names:
-            print(f"  {_cyan(n)}")
+            origin = ""
+            if annotate:
+                src = backup_source_cluster(args, n)
+                origin = "  " + _dim(f"({src or 'source unknown'})")
+            print(f"  {_cyan(n)}{origin}")
         info("add " + _bold("--detail") + " for size / milvus version / "
              "collections (one extra read per backup)")
         return
@@ -500,7 +536,6 @@ def do_backups(args):
               f"  {_dim('milvus=')}{d.get('milvus_version', '?')}"
               f"  {_dim('state=')}{d.get('state_code', '?')}"
               f"  {_dim('collections=')}{','.join(cols) or '-'}")
-
 
 def get_replicate_view(cluster, rpc_tries=None, rpc_timeout=None):
     """One cluster's own replicate configuration (with the usual short-timeout
@@ -568,6 +603,7 @@ def do_backup_get(args):
             f"milvus-backup cannot delete those either; remove the S3 prefix "
             f"<backupRootPath>/{args.backup_name}/ yourself (see HANDOFF §2.2).")
     kv("name", d.get("name", "?"), _green)
+    kv("source cluster", backup_source_cluster(args, args.backup_name) or "unknown")
     kv("state_code", str(d.get("state_code", "?")))
     kv("size", f"{d.get('size', '?')}B")
     kv("milvus_version", d.get("milvus_version", "?"))
