@@ -946,10 +946,12 @@ def do_replicate_config(args, upstream, downstream):
     # Implicit-removal guard: UpdateReplicateConfiguration is full-state
     # replacement, so a raw config silently tears down every edge it doesn't
     # mention (observed live four times now). Removing edges must be explicit:
-    # --merge keeps them, --replace means exactly this config.
+    # --merge keeps them, --replace means exactly this config. Interactively,
+    # the operator gets the choice on the spot; in scripts (no TTY) we refuse.
     if not getattr(args, "merge", False) and not getattr(args, "replace", False):
         new_edges = {(t.source_cluster_id, t.target_cluster_id)
                      for t in config.cross_cluster_topology}
+        removed_by = {}
         for cluster in targets:
             try:
                 cur = get_replicate_view(cluster,
@@ -960,13 +962,35 @@ def do_replicate_config(args, upstream, downstream):
             removed = {(t.source_cluster_id, t.target_cluster_id)
                        for t in cur.cross_cluster_topology} - new_edges
             if removed:
-                lost = ", ".join(f"{s_}→{t_}" for s_, t_ in sorted(removed))
+                removed_by[cluster.cluster_id] = removed
+        if removed_by:
+            lost = ", ".join(sorted({f"{s_}→{t_}" for rm in removed_by.values()
+                                     for (s_, t_) in rm}))
+            if not sys.stdin.isatty():
                 raise RuntimeError(
                     f"refusing: this config would IMPLICITLY remove edge(s) "
-                    f"{lost} from {cluster.cluster_id}'s topology "
-                    f"(UpdateReplicateConfiguration is full-state replacement). "
-                    f"Use --merge to ADD the new edge keeping existing ones, "
-                    f"or --replace if this exact config is what you mean.")
+                    f"{lost} (full-state replacement). Use --merge to ADD the "
+                    f"new edge keeping existing ones, or --replace if this "
+                    f"exact config is what you mean.")
+            warn(f"this config would IMPLICITLY remove edge(s): {lost}")
+            info("(UpdateReplicateConfiguration is full-state replacement)")
+            print()
+            print(f"    [m] merge    — add the new edge, KEEP existing edges ({lost} survives)")
+            print(f"    [r] {_red('REPLACE')}  — apply exactly this config; "
+                  f"{_red('the edge(s) above are TORN DOWN')}")
+            print(f"    [q] quit     — do nothing (default)")
+            ans = input("  choose [m/r/Q]: ").strip().lower()
+            if ans == "m":
+                config = merged_replicate_config(source, target)
+                info("switched to MERGE — existing edges are kept")
+            elif ans == "r":
+                ans2 = input(f"  type 'replace' to confirm tearing down {lost}: ").strip()
+                if ans2 != "replace":
+                    info("aborted")
+                    sys.exit(1)
+            else:
+                info("aborted")
+                sys.exit(1)
     for cluster in targets:
         apply_replicate_config(cluster, config)
 
