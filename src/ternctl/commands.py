@@ -942,7 +942,9 @@ def do_topology(args):
 
 
 def do_replicate_config(args, upstream, downstream):
-    source, target = (upstream, downstream) if args.direction == "up2down" else (downstream, upstream)
+    # The edge is always upstream→downstream — the flags mean what they say.
+    # (The old --direction down2up could silently invert them.)
+    source, target = upstream, downstream
     if getattr(args, "merge", False):
         # Merge the edge into the SOURCE's current topology instead of
         # replacing it — the repair/append tool for multi-downstream layouts.

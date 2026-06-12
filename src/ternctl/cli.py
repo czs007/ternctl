@@ -206,7 +206,6 @@ def build_parser():
 
     p_repl = sub.add_parser("replicate-config", help="raw inittarget equivalent")
     add_common(p_repl)
-    p_repl.add_argument("--direction", choices=["up2down", "down2up"], default="up2down")
     p_repl.add_argument("--apply-to", choices=["upstream", "downstream", "both"], default="both",
                         help="which cluster(s) to send the RPC to. Only the config's "
                              "PRIMARY actually executes the change (it broadcasts the "
