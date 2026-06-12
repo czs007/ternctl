@@ -1,6 +1,7 @@
 """milvus-backup CLI integration (backup create / restore secondary / list)."""
 import json
 import os
+import re
 import subprocess
 
 from . import output
@@ -21,11 +22,32 @@ def run_backup(args, argv):
         log_path = os.path.join(args.backup_workdir, "milvus-backup-cli.log")
         with open(log_path, "ab") as f:
             f.write(("\n==== " + " ".join(argv) + " ====\n").encode())
+            f.flush()  # subprocess writes the SAME fd directly — without this
+                       # flush the buffered header can land AFTER its output,
+                       # scrambling per-run sections in the log
             result = subprocess.run(cmd, cwd=args.backup_workdir, stdout=f, stderr=subprocess.STDOUT)
     if result.returncode != 0:
+        log_path = os.path.join(args.backup_workdir, "milvus-backup-cli.log")
+        tail = "" if output._VERBOSE else _error_tail(log_path)
         if not output._VERBOSE:
-            warn(f"see {os.path.join(args.backup_workdir, 'milvus-backup-cli.log')} for milvus-backup output")
-        raise RuntimeError(f"milvus-backup exited with code {result.returncode}: {' '.join(argv)}")
+            warn(f"full milvus-backup output: {log_path}")
+        raise RuntimeError(
+            f"milvus-backup exited with code {result.returncode}: {' '.join(argv)}"
+            + (f"\n  cause: {tail}" if tail else ""))
+
+
+def _error_tail(log_path):
+    """The actual failure line(s) from the CURRENT run's section of the log —
+    the operator should never have to dig the log file for the root cause."""
+    try:
+        text = open(log_path, encoding="utf-8", errors="ignore").read()
+    except OSError:
+        return ""
+    section = text.rsplit("\n==== ", 1)[-1]          # this invocation only
+    lines = [l.strip() for l in section.splitlines() if l.strip()]
+    hits = [l for l in lines
+            if re.search(r"(?i)\berror\b|invalid|failed|cannot|denied|refused|exceed", l)]
+    return " | ".join((hits or lines)[-2:])
 
 
 def run_backup_capture(args, argv):
