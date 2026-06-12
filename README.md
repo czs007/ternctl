@@ -100,7 +100,7 @@ clusters:
 - **`cdc_metrics`** — optional; this cluster's CDC pod `/metrics` endpoint, used
   to show real replication lag (see below).
 
-Override the path with `--config PATH` or `TERNCTL_CONFIG`.
+Override the path with the `TERNCTL_CONFIG` env var (e.g. one shell per environment).
 
 ## Real replication lag (no Prometheus needed)
 
