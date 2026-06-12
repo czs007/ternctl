@@ -1,5 +1,6 @@
 """Argument parser, command dispatch, REPL, and the `ternctl` entry point."""
 import argparse
+import re
 import sys
 import time
 
