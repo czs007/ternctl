@@ -46,7 +46,7 @@ ternctl status    --upstream cluster-a    # downstreams auto-discovered
 ternctl topology                          # no args = every configured cluster
 
 # 4. graceful switchover (reverse the direction)
-ternctl switchover --upstream cluster-a --downstream cluster-b
+ternctl switchover --target cluster-b    # current primary auto-discovered
 ```
 
 ## Specifying clusters: by name or inline
@@ -63,10 +63,10 @@ Every command takes clusters two ways:
 | command | what it does |
 |---|---|
 | `rebuild` | seed the standby from a backup + start replication |
-| `switchover` | gracefully reverse the topology (planned failover) |
+| `switchover` | graceful role flip (RPO=0): `--target` = who should END UP primary; current primary auto-discovered |
 | `force-promote` | promote a standby to independent primary when the primary is **down** (bounded RPO = CDC lag); can prefetch a salvage checkpoint |
 | `status` | per-pchannel replication progress; omit `--downstream` to auto-discover all downstreams; with CDC metrics, the real e2e lag |
-| `topology` | replication topology + consistency check; no args = every cluster in the config file |
+| `topology` | replication forest (PRIMARY roots, standbys nested) + per-edge & overall consistency; no args = every configured cluster |
 | `verify` | compare row counts (`--once` for a single snapshot); omit `--downstream` to auto-discover |
 | `detach` | remove ONE replication edge; `--downstream` alone auto-discovers its upstream (teardown — not a pause) |
 | `replicate-config` | low-level: apply a replicate configuration directly |

@@ -194,37 +194,59 @@ def do_restore(args):
          + (f" as <name>{suffix}." if suffix else "."))
 
 
-def do_switchover(args, upstream, downstream):
-    header("SWITCHOVER",
-           f"current primary: {_cyan(upstream.cluster_id)} ({upstream.uri})\n"
-           f"current standby: {_cyan(downstream.cluster_id)} ({downstream.uri})")
-    # Direction pre-flight (read-only): --upstream must be the CURRENT primary
-    # of this edge. A reversed invocation used to be accepted verbatim — the
-    # "reversed" config went to a STANDBY, which cannot execute topology
-    # changes and just parks the RPC until its 60s timeout. Refuse instantly
-    # with the corrected command instead.
-    edges = [(t.source_cluster_id, t.target_cluster_id)
-             for t in get_replicate_view(upstream).cross_cluster_topology]
-    fwd = (upstream.cluster_id, downstream.cluster_id)
-    rev = (downstream.cluster_id, upstream.cluster_id)
-    if fwd not in edges:
-        if rev in edges:
+def do_switchover(args, config):
+    """Graceful role flip: make --target the primary of its edge (RPO = 0).
+    The target's CURRENT primary is auto-discovered from the target's own
+    replicate config — the operator declares the desired END STATE instead of
+    asserting the current roles (a stale mental model of "who is primary now"
+    can no longer flip the pair the wrong way; at worst it's a no-op error)."""
+    target = resolve_cluster("target", args.target, config,
+                             token=args.token, pchannel_num=args.pchannel_num)
+    view = get_replicate_view(target,
+                              getattr(args, "rpc_retries", None),
+                              getattr(args, "rpc_timeout", None))
+    incoming = sorted({t.source_cluster_id for t in view.cross_cluster_topology
+                       if t.target_cluster_id == target.cluster_id})
+    outgoing = sorted({t.target_cluster_id for t in view.cross_cluster_topology
+                       if t.source_cluster_id == target.cluster_id})
+    if not incoming:
+        if outgoing:
             raise RuntimeError(
-                f"direction reversed: the current primary of this edge is "
-                f"{downstream.cluster_id}, not {upstream.cluster_id}. Run:  "
-                f"ternctl switchover --upstream {downstream.cluster_id} "
-                f"--downstream {upstream.cluster_id}")
+                f"{target.cluster_id} is already the primary of its edge "
+                f"({target.cluster_id} → {', '.join(outgoing)}) — nothing to do")
         raise RuntimeError(
-            f"no {upstream.cluster_id} → {downstream.cluster_id} replication "
-            f"edge exists — switchover reverses an EXISTING edge. See "
-            f"`ternctl topology`; to create the edge use `ternctl rebuild`.")
+            f"{target.cluster_id} has no incoming replication edge — nothing "
+            f"to switch over (see `ternctl topology`; create an edge with "
+            f"`ternctl rebuild`)")
+    if len(incoming) > 1:
+        raise RuntimeError(
+            f"{target.cluster_id} reports multiple upstreams "
+            f"({', '.join(incoming)}) — pass --upstream to pick the edge")
+    up_cid = incoming[0]
+    asserted = getattr(args, "upstream", None)
+    if asserted and asserted.split("=", 1)[0].strip() != up_cid:
+        raise RuntimeError(
+            f"{target.cluster_id}'s upstream is {up_cid}, not "
+            f"{asserted.split('=', 1)[0].strip()}")
+    if not asserted and up_cid not in config:
+        raise RuntimeError(
+            f"discovered current primary '{up_cid}' is not in the config file — "
+            f"add it (ternctl config add {up_cid} --uri ...) or pass "
+            f"--upstream {up_cid}=http://...:19530")
+    upstream = resolve_cluster("upstream", asserted or up_cid, config,
+                               token=args.token, pchannel_num=args.pchannel_num)
+    header("SWITCHOVER",
+           f"target (new primary): {_cyan(target.cluster_id)} ({target.uri})\n"
+           f"current primary:      {_cyan(upstream.cluster_id)} ({upstream.uri})")
+    info(f"current primary auto-discovered from {target.cluster_id}'s "
+         f"replicate config: {up_cid}")
+    down2up = build_replicate_config(upstream, target, source=target, target=upstream)
     step("1/2", f"apply reversed topology to {upstream.cluster_id}")
-    down2up = build_replicate_config(upstream, downstream, source=downstream, target=upstream)
     apply_replicate_config(upstream, down2up, _quiet=True); done()
-    step("2/2", f"apply reversed topology to {downstream.cluster_id}")
-    apply_replicate_config(downstream, down2up, _quiet=True); done()
+    step("2/2", f"apply reversed topology to {target.cluster_id}")
+    apply_replicate_config(target, down2up, _quiet=True); done()
     header("DONE")
-    kv("new primary", f"{downstream.cluster_id} ({downstream.uri})", _green)
+    kv("new primary", f"{target.cluster_id} ({target.uri})", _green)
     kv("now standby", f"{upstream.cluster_id} ({upstream.uri})", _dim)
     info("point application writes at the new primary; old primary now receives via CDC")
 
@@ -738,32 +760,67 @@ def do_topology(args):
             print(_dim(f"  · {cid} answered in {dt:.1f}s ({state})"), flush=True)
     print()
 
-    # Per-cluster role, derived from each cluster's OWN view.
-    for cid, _ in specs:
-        v = views[cid]
-        if v["error"]:
-            print(f"  {_red('○')} {cid:14} {_red('unreachable')} {_dim('(' + v['error'] + ')')}")
-            continue
-        outgoing = [t for (s, t) in v["edges"] if s == cid]
-        incoming = [s for (s, t) in v["edges"] if t == cid]
-        if outgoing:
-            role, detail = _green("PRIMARY"), "→ " + ", ".join(outgoing)
-        elif incoming:
-            role, detail = _yel("STANDBY"), "← " + ", ".join(incoming)
-        else:
-            role, detail = _dim("INDEPENDENT"), _dim("(no replication edges)")
-        print(f"  {_green('●')} {cid:14} {role}  {detail}")
-
-    # Union of edges across all views.
+    # ── Forest render ──────────────────────────────────────────────────
+    # Each PRIMARY is a tree root with its standbys nested beneath it;
+    # INDEPENDENT clusters are childless roots; unreachable clusters (role
+    # unknown) come last. An edge only one endpoint reports is flagged inline.
     all_edges = {}
     for cid, v in views.items():
         for e in v["edges"]:
             all_edges.setdefault(e, set()).add(cid)
-    if all_edges:
-        print()
-        print(f"  {_dim('edges (source → target):')}")
-        for (s, t), reporters in sorted(all_edges.items()):
-            print(f"    {_bold(s + ' → ' + t)}   {_dim('reported by ' + ', '.join(sorted(reporters)))}")
+    children, parents = {}, {}
+    for (s_, t_) in all_edges:
+        children.setdefault(s_, []).append(t_)
+        parents.setdefault(t_, []).append(s_)
+
+    queried = [cid for cid, _ in specs]
+    reachable = {cid for cid in queried if not views[cid]["error"]}
+
+    def edge_flag(s_, t_):
+        # an endpoint that is reachable but does NOT report the edge → residual
+        reporters = all_edges.get((s_, t_), set())
+        missing = [c for c in (s_, t_) if c in reachable and c not in reporters]
+        if missing:
+            return "  " + _yel("⚠ only " + ", ".join(sorted(reporters)) +
+                               " reports this edge")
+        return ""
+
+    seen = set()
+
+    def render(cid, prefix):
+        kids = sorted(children.get(cid, []))
+        for i, kid in enumerate(kids):
+            last = (i == len(kids) - 1)
+            conn = "└── " if last else "├── "
+            if kid in seen:
+                print(f"  {prefix}{conn}{_red(kid + '  ↻ CYCLE')}")
+                continue
+            seen.add(kid)
+            note = "" if kid in queried else "  " + _dim("(not queried)")
+            print(f"  {prefix}{conn}{kid:14} {_yel('STANDBY')}"
+                  f"{edge_flag(cid, kid)}{note}")
+            render(kid, prefix + ("    " if last else "│   "))
+
+    roots = sorted([c for c in set(queried) | set(children)
+                    if c not in parents and (c in children or c in reachable)])
+    first = True
+    for r in roots:
+        if not first:
+            print()
+        first = False
+        seen.add(r)
+        kids = children.get(r, [])
+        role = _green("PRIMARY") if kids else _dim("INDEPENDENT")
+        extra = "" if kids else "  " + _dim("(no replication edges)")
+        note = "" if r in queried else "  " + _dim("(not queried)")
+        print(f"  {_green('●')} {r:14} {role}{extra}{note}")
+        render(r, "")
+    for cid in queried:
+        if views[cid]["error"] and cid not in parents and cid not in children:
+            print()
+            print(f"  {_red('○')} {cid:14} {_red('unreachable')} "
+                  f"{_dim('(' + views[cid]['error'] + ')')}")
+    print()
 
     # Consistency: every reported edge must be confirmed by BOTH of its
     # endpoints. A reachable cluster with no edges that no edge involves is

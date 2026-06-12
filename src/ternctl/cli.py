@@ -133,8 +133,20 @@ def build_parser():
     p_rebuild.add_argument("--verify", action="store_true")
     p_rebuild.add_argument("--collections", default=None)
 
-    p_switch = sub.add_parser("switchover", help="reverse topology (graceful promote)")
-    add_common(p_switch)
+    p_switch = sub.add_parser("switchover",
+                              help="graceful role flip (RPO=0): make --target the primary of its edge")
+    g = p_switch.add_argument_group("target (NAME from config file, or NAME=URI inline)")
+    g.add_argument("--target", required=True, metavar="NAME[=URI]",
+                   help="the standby that should END UP primary; its current "
+                        "primary is auto-discovered from its own replicate config")
+    g.add_argument("--upstream", default=None, metavar="NAME[=URI]",
+                   help="optional assertion of the target's current primary — "
+                        "errors if it doesn't match (never required)")
+    g.add_argument("--pchannel-num", type=int, default=None)
+    g.add_argument("--token", default=None)
+    g.add_argument("--config", default=None, metavar="PATH",
+                   help="config file path (default ~/.ternctl.yaml)")
+    add_rpc_opts(p_switch)
 
     p_force = sub.add_parser("force-promote", help="promote secondary to independent primary (original primary down)")
     g = p_force.add_argument_group("target (NAME from config, or NAME=URI inline)")
@@ -430,6 +442,10 @@ def run_command(args, parser):
             do_topology(args)
             return
 
+        if args.command == "switchover":
+            do_switchover(args, load_config(getattr(args, "config", None)))
+            return
+
         if args.command == "detach":
             config = load_config(getattr(args, "config", None))
             downstream = resolve_cluster("downstream", args.downstream, config,
@@ -471,8 +487,6 @@ def run_command(args, parser):
             fill_backup_args(args, config,
                              up_cid=upstream.cluster_id, down_cid=downstream.cluster_id)
             do_rebuild(args, upstream, downstream)
-        elif args.command == "switchover":
-            do_switchover(args, upstream, downstream)
         elif args.command == "status":
             do_status(args, upstream, downstream)
         elif args.command == "verify":
