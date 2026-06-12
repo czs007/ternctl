@@ -38,8 +38,6 @@ def add_common(p, downstream_required=True, upstream_required=True):
     g.add_argument("--pchannel-num", type=int, default=None,
                    help="override pchannel count (default: config value or 16)")
     g.add_argument("--token", default=None, help="override auth token")
-    g.add_argument("--config", default=None, metavar="PATH",
-                   help="config file path (default ~/.ternctl.yaml)")
 
 
 def add_rpc_opts(p):
@@ -147,8 +145,6 @@ def build_parser():
                         "errors if it doesn't match (never required)")
     g.add_argument("--pchannel-num", type=int, default=None)
     g.add_argument("--token", default=None)
-    g.add_argument("--config", default=None, metavar="PATH",
-                   help="config file path (default ~/.ternctl.yaml)")
     add_rpc_opts(p_switch)
 
     p_force = sub.add_parser("force-promote", help="promote secondary to independent primary (original primary down)")
@@ -159,8 +155,6 @@ def build_parser():
                    help="override the target's inter-cluster URI")
     g.add_argument("--pchannel-num", type=int, default=None)
     g.add_argument("--token", default=None)
-    g.add_argument("--config", default=None, metavar="PATH",
-                   help="config file path (default ~/.ternctl.yaml)")
     p_force.add_argument("--yes", action="store_true", help="skip the RPO confirmation prompt")
     sg = p_force.add_argument_group("salvage checkpoint prefetch (recommended for DR)")
     sg.add_argument("--salvage-source-cluster-id", default=None,
@@ -204,8 +198,6 @@ def build_parser():
                              "--cluster). 'a,b,c', 'a, b, c' and 'a b c' all work.")
     p_topo.add_argument("--pchannel-num", type=int, default=None)
     p_topo.add_argument("--token", default=None)
-    p_topo.add_argument("--config", default=None, metavar="PATH",
-                        help="config file path (default ~/.ternctl.yaml)")
     add_rpc_opts(p_topo)
 
     p_verify = sub.add_parser("verify", help="compare row counts")
@@ -258,14 +250,10 @@ def build_parser():
                         "implicit.)")
     g.add_argument("--pchannel-num", type=int, default=None)
     g.add_argument("--token", default=None)
-    g.add_argument("--config", default=None, metavar="PATH",
-                   help="config file path (default ~/.ternctl.yaml)")
 
     def _backup_common(p, cluster_required=True, cluster_help="the cluster (config NAME or NAME=URI)"):
         p.add_argument("--cluster", required=cluster_required, metavar="NAME[=URI]",
                        help=cluster_help)
-        p.add_argument("--config", default=None, metavar="PATH",
-                       help="ternctl config file (default ~/.ternctl.yaml)")
         g = p.add_argument_group("milvus-backup (optional if set in ~/.ternctl.yaml)")
         g.add_argument("--backup-bin", default=None)
         g.add_argument("--backup-workdir", default=None)
@@ -314,8 +302,6 @@ def build_parser():
     p_clusters.add_argument("--probe", action="store_true",
                             help="also probe each cluster's uri for gRPC reachability "
                                  "(transport-level, ~2s timeout per cluster)")
-    p_clusters.add_argument("--config", default=None, metavar="PATH",
-                            help="config file path (default ~/.ternctl.yaml)")
 
     p_config = sub.add_parser("config", help="manage the cluster config file (~/.ternctl.yaml)")
     csub = p_config.add_subparsers(dest="config_command", required=True)
@@ -334,19 +320,14 @@ def build_parser():
     c_add.add_argument("--kafka-brokers", default=None, metavar="HOSTS",
                        help="this cluster's Kafka bootstrap hosts (lets salvage omit "
                             "--kafka-brokers)")
-    c_add.add_argument("--config", default=None, metavar="PATH")
     c_def = csub.add_parser("set-defaults",
                             help="set environment-wide defaults (milvus-backup bin / workdir)")
     c_def.add_argument("--backup-bin", default=None, metavar="PATH")
     c_def.add_argument("--backup-workdir", default=None, metavar="PATH")
-    c_def.add_argument("--config", default=None, metavar="PATH")
     c_list = csub.add_parser("list", help="list configured clusters")
-    c_list.add_argument("--config", default=None, metavar="PATH")
     c_show = csub.add_parser("show", help="print the raw config file (YAML)")
-    c_show.add_argument("--config", default=None, metavar="PATH")
     c_rm = csub.add_parser("remove", help="remove a cluster")
     c_rm.add_argument("name")
-    c_rm.add_argument("--config", default=None, metavar="PATH")
 
     p_salvage = sub.add_parser("salvage",
                                help="recover WAL messages from Kafka using a salvage checkpoint")
@@ -366,8 +347,6 @@ def build_parser():
     p_salvage.add_argument("--output-dir", default=None, metavar="DIR",
                            help="sweep mode: directory for per-pchannel jsonl files "
                                 "(salvage_dml_<i>.jsonl)")
-    p_salvage.add_argument("--config", default=None, metavar="PATH",
-                           help="ternctl config file (default ~/.ternctl.yaml)")
     p_salvage.add_argument("--from-checkpoint-file", default=None, metavar="PATH",
                            help="salvage checkpoint JSON from `ternctl force-promote "
                                 "--salvage-source-cluster-id`. RECOMMENDED — works after "

@@ -55,7 +55,7 @@ Every command takes clusters two ways:
 
 | form | example | when |
 |---|---|---|
-| **reference** | `--upstream cluster-a` | normal use — looked up in `~/.ternctl.yaml` |
+| **reference** | `--upstream cluster-a` | normal use — looked up in `~/.ternctl.yaml` (override the file with the `TERNCTL_CONFIG` env var, e.g. one shell per environment) |
 | **inline** | `--upstream cluster-a=http://127.0.0.1:19530` | CI / one-off, no config file needed |
 
 ## Commands
