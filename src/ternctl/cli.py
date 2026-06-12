@@ -17,11 +17,14 @@ from .salvage import do_salvage
 # --------------------------------------------------------------------------- #
 # CLI
 # --------------------------------------------------------------------------- #
-def add_common(p, downstream_required=True):
+def add_common(p, downstream_required=True, upstream_required=True):
     g = p.add_argument_group("clusters (NAME from config file, or NAME=URI inline)")
-    g.add_argument("--upstream", required=True, metavar="NAME[=URI]",
+    g.add_argument("--upstream", required=upstream_required, metavar="NAME[=URI]",
                    help="source cluster: a name from ~/.ternctl.yaml, or inline "
-                        "NAME=URI (e.g. cluster-a=http://127.0.0.1:19530)")
+                        "NAME=URI (e.g. cluster-a=http://127.0.0.1:19530)"
+                        + ("" if upstream_required else
+                           "; omit to auto-discover it from --downstream's own "
+                           "replicate config (a standby has exactly one upstream)"))
     g.add_argument("--downstream", required=downstream_required, metavar="NAME[=URI]",
                    help="target cluster (same NAME or NAME=URI form)"
                         + ("" if downstream_required else
@@ -164,7 +167,7 @@ def build_parser():
                          "unrecoverable, so opting OUT is the explicit action.")
 
     p_status = sub.add_parser("status", help="dump replication checkpoints")
-    add_common(p_status, downstream_required=False)
+    add_common(p_status, downstream_required=False, upstream_required=False)
     add_rpc_opts(p_status)
     p_status.add_argument("--upstream-cdc-metrics", "--up-cdc", default=None, metavar="URL",
                           dest="upstream_cdc_metrics",
@@ -191,7 +194,7 @@ def build_parser():
     add_rpc_opts(p_topo)
 
     p_verify = sub.add_parser("verify", help="compare row counts")
-    add_common(p_verify, downstream_required=False)
+    add_common(p_verify, downstream_required=False, upstream_required=False)
     add_rpc_opts(p_verify)
     p_verify.add_argument("--collections", default=None)
     p_verify.add_argument("--once", action="store_true",
@@ -439,13 +442,25 @@ def run_command(args, parser):
             do_detach(args, upstream, downstream)
             return
 
-        if args.command in ("status", "verify") and not args.downstream:
+        if args.command in ("status", "verify") and not (args.upstream and args.downstream):
             config = load_config(getattr(args, "config", None))
-            upstream = resolve_cluster("upstream", args.upstream, config,
-                                       inter=args.upstream_inter, token=args.token,
-                                       pchannel_num=args.pchannel_num)
-            ok = for_each_downstream(args, upstream, config,
-                                     do_status if args.command == "status" else verify)
+            fn = do_status if args.command == "status" else verify
+            if args.upstream:
+                upstream = resolve_cluster("upstream", args.upstream, config,
+                                           inter=args.upstream_inter, token=args.token,
+                                           pchannel_num=args.pchannel_num)
+                ok = for_each_downstream(args, upstream, config, fn)
+            elif args.downstream:
+                downstream = resolve_cluster("downstream", args.downstream, config,
+                                             inter=args.downstream_inter, token=args.token,
+                                             pchannel_num=args.pchannel_num)
+                upstream = discover_upstream(args, downstream, config)
+                r = fn(args, upstream, downstream)
+                ok = r is None or bool(r)
+            else:
+                raise RuntimeError(
+                    "give --upstream and/or --downstream — either side can be "
+                    "inferred from the other")
             if args.command == "verify":
                 sys.exit(0 if ok else 1)
             return
