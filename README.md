@@ -68,7 +68,7 @@ Every command takes clusters two ways:
 | `status` | per-pchannel replication progress; omit `--downstream` to auto-discover all downstreams; with CDC metrics, the real e2e lag |
 | `topology` | replication topology + consistency check; no args = every cluster in the config file |
 | `verify` | compare row counts (`--once` for a single snapshot); omit `--downstream` to auto-discover |
-| `break-topology` | delete a replication edge (teardown — not a pause) |
+| `detach` | remove ONE replication edge; `--downstream` alone auto-discovers its upstream (teardown — not a pause) |
 | `replicate-config` | low-level: apply a replicate configuration directly |
 | `backup` | `create` / `list` / `get` / `restore` / `delete` — the whole archive lifecycle (config-driven endpoints) |
 | `salvage` | recover the unforwarded WAL tail from Kafka after a force-promote; `--source-cluster NAME` sweeps ALL pchannels in one run |

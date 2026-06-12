@@ -797,7 +797,34 @@ def do_replicate_config(args, upstream, downstream):
         apply_replicate_config(cluster, config)
 
 
-def do_break_topology(args, upstream, downstream):
+def discover_upstream(args, downstream, config):
+    """A standby has exactly ONE incoming edge — read it from the downstream's
+    own replicate config, so `detach --downstream X` needs no --upstream."""
+    cfg = get_replicate_view(downstream,
+                             getattr(args, "rpc_retries", None),
+                             getattr(args, "rpc_timeout", None))
+    sources = sorted({t.source_cluster_id for t in cfg.cross_cluster_topology
+                      if t.target_cluster_id == downstream.cluster_id})
+    if not sources:
+        raise RuntimeError(
+            f"{downstream.cluster_id} has no incoming replication edge — "
+            f"nothing to detach (run `ternctl topology` to see the picture)")
+    if len(sources) > 1:
+        raise RuntimeError(
+            f"{downstream.cluster_id} reports multiple upstreams "
+            f"({', '.join(sources)}) — pass --upstream explicitly")
+    cid = sources[0]
+    if cid not in config:
+        raise RuntimeError(
+            f"discovered upstream '{cid}' is not in the config file — "
+            f"add it (ternctl config add {cid} --uri ...) or pass --upstream inline")
+    info(f"upstream auto-discovered from {downstream.cluster_id}'s replicate "
+         f"config: {cid}")
+    return resolve_cluster("upstream", cid, config, token=args.token,
+                           pchannel_num=getattr(args, "pchannel_num", None))
+
+
+def do_detach(args, upstream, downstream):
     """Remove ONE replication edge (upstream→downstream), leaving the
     upstream's other downstream edges intact.
 
@@ -822,7 +849,7 @@ def do_break_topology(args, upstream, downstream):
     re-creating the edge later may silently lose data if retention has
     expired.
     """
-    header("BREAK TOPOLOGY",
+    header("DETACH",
            f"primary:   {_cyan(upstream.cluster_id)}\n"
            f"secondary: {_cyan(downstream.cluster_id)}\n"
            f"{_yel('⚠')} DELETES this edge — use only for teardown, not as a pause")

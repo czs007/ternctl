@@ -103,20 +103,6 @@ def independent_replicate_config(target_cluster):
     )
 
 
-def break_topology_config(*clusters):
-    """Build a ReplicateConfiguration that keeps the cluster definitions but has
-    EMPTY cross_cluster_topology. Applying this is the supported way to delete a
-    replication edge ("rewrite the topology to remove the edge").
-
-    Used for cleanup / teardown only. Do NOT use this as a "pause" — the
-    source-side WAL retention keeps ticking, so re-creating the edge later may
-    silently lose data if retention has expired in between.
-    """
-    return common_pb2.ReplicateConfiguration(
-        clusters=[c.milvus_cluster() for c in clusters],
-        cross_cluster_topology=[],
-    )
-
 
 def get_replicate_checkpoints(observer, source_cluster_id, pchannels,
                               rpc_tries=RPC_RETRIES, rpc_timeout=RPC_TIMEOUT,

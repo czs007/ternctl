@@ -8,7 +8,7 @@ from .output import log, _red, _cyan, _bold, _dim
 from .config import load_config, load_defaults, resolve_cluster
 from .verify import verify
 from .commands import (do_rebuild, do_switchover, do_force_promote, do_status,
-                       do_config, do_topology, do_replicate_config, do_break_topology,
+                       do_config, do_topology, do_replicate_config, do_detach, discover_upstream,
                        do_backup, do_restore, do_clusters, do_backups,
                        do_backup_get, do_backup_delete, for_each_downstream)
 from .salvage import do_salvage
@@ -217,9 +217,23 @@ def build_parser():
                              "to a primary that has other downstreams tears their "
                              "edges down)")
 
-    p_break = sub.add_parser("break-topology",
-                             help="delete the replication edge between two clusters (cleanup/teardown)")
-    add_common(p_break)
+    p_detach = sub.add_parser("detach",
+                              help="remove ONE replication edge (upstream→downstream); "
+                                   "other edges survive")
+    g = p_detach.add_argument_group("edge (NAME from config file, or NAME=URI inline)")
+    g.add_argument("--downstream", required=True, metavar="NAME[=URI]",
+                   help="the standby to detach. Its upstream is auto-discovered from "
+                        "its own replicate config (a standby has exactly one), so "
+                        "--upstream is optional")
+    g.add_argument("--upstream", default=None, metavar="NAME[=URI]",
+                   help="the edge's source — optional; pass it to assert WHICH edge "
+                        "you mean. (--upstream alone is deliberately NOT accepted: "
+                        "detaching ALL of a primary's standbys in one go is never "
+                        "implicit.)")
+    g.add_argument("--pchannel-num", type=int, default=None)
+    g.add_argument("--token", default=None)
+    g.add_argument("--config", default=None, metavar="PATH",
+                   help="config file path (default ~/.ternctl.yaml)")
 
     def _backup_common(p, cluster_required=True, cluster_help="the cluster (config NAME or NAME=URI)"):
         p.add_argument("--cluster", required=cluster_required, metavar="NAME[=URI]",
@@ -410,6 +424,18 @@ def run_command(args, parser):
             do_topology(args)
             return
 
+        if args.command == "detach":
+            config = load_config(getattr(args, "config", None))
+            downstream = resolve_cluster("downstream", args.downstream, config,
+                                         token=args.token, pchannel_num=args.pchannel_num)
+            if args.upstream:
+                upstream = resolve_cluster("upstream", args.upstream, config,
+                                           token=args.token, pchannel_num=args.pchannel_num)
+            else:
+                upstream = discover_upstream(args, downstream, config)
+            do_detach(args, upstream, downstream)
+            return
+
         if args.command in ("status", "verify") and not args.downstream:
             config = load_config(getattr(args, "config", None))
             upstream = resolve_cluster("upstream", args.upstream, config,
@@ -436,8 +462,7 @@ def run_command(args, parser):
             sys.exit(0 if ok else 1)
         elif args.command == "replicate-config":
             do_replicate_config(args, upstream, downstream)
-        elif args.command == "break-topology":
-            do_break_topology(args, upstream, downstream)
+
     except RuntimeError as exc:
         log(f"ERROR: {exc}")
         sys.exit(1)
