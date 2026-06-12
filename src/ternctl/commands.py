@@ -593,6 +593,26 @@ def get_replicate_view(cluster, rpc_tries=None, rpc_timeout=None):
             f"({e.code().name if hasattr(e, 'code') else e})")
 
 
+def discover_downstreams(args, upstream, config):
+    """Resolved Cluster objects for every downstream in the upstream's own
+    replicate config (unregistered ids are warned about and skipped)."""
+    cfg = get_replicate_view(upstream,
+                             getattr(args, "rpc_retries", None),
+                             getattr(args, "rpc_timeout", None))
+    targets = [t.target_cluster_id for t in cfg.cross_cluster_topology
+               if t.source_cluster_id == upstream.cluster_id]
+    out = []
+    for tcid in targets:
+        if tcid not in config:
+            warn(f"downstream '{tcid}' is not in the config file — skipped. "
+                 f"Add it: ternctl config add {tcid} --uri http://...:19530")
+            continue
+        out.append(resolve_cluster("downstream", tcid, config,
+                                   token=args.token,
+                                   pchannel_num=getattr(args, "pchannel_num", None)))
+    return targets, out
+
+
 def for_each_downstream(args, upstream, config, fn):
     """--downstream omitted: discover the upstream's downstreams from its own
     replicate configuration and run fn(args, upstream, downstream) for each.

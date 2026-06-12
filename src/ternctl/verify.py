@@ -33,52 +33,69 @@ def row_counts(cluster, names):
 
 
 def verify(args, upstream, downstream, retries=6, interval=5):
+    return verify_many(args, upstream, [downstream], retries, interval)
+
+
+def verify_many(args, upstream, downstreams, retries=6, interval=5):
+    """ONE table for any number of downstreams: a column per target, a row per
+    collection. The retry loop waits until EVERY pair converges (or budget
+    runs out); --once takes a single snapshot and reports gaps without
+    declaring failure."""
     once = getattr(args, "once", False)
     if once:
-        retries = 1  # single snapshot — no internal wait loop
+        retries = 1
+    tids = [d.cluster_id for d in downstreams]
     header("VERIFY",
-           f"compare row counts: {_cyan(upstream.cluster_id)} (source) vs "
-           f"{_cyan(downstream.cluster_id)} (target)"
+           f"row counts: {_cyan(upstream.cluster_id)} (source) vs "
+           + ", ".join(_cyan(t) for t in tids)
            + ("\nsnapshot mode (--once): no retry; re-run to watch convergence" if once else ""))
     names = args.collections.split(",") if args.collections else list_collections(upstream)
     names = [n for n in names if n]
     if not names:
         warn("no collections found on the primary; nothing to verify")
         return True
-    last_up, last_down = {}, {}
+
+    src, per_t = {}, {}
     for attempt in range(1, retries + 1):
-        last_up = row_counts(upstream, names)
-        last_down = row_counts(downstream, names)
-        if all(last_up.get(n) == last_down.get(n) for n in names):
+        src = row_counts(upstream, names)
+        per_t = {d.cluster_id: row_counts(d, names) for d in downstreams}
+        if all(src.get(n) == per_t[t].get(n) for n in names for t in tids):
             break
         if attempt < retries:
             info(f"counts differ (attempt {attempt}/{retries}); waiting {interval}s for replication...")
             time.sleep(interval)
-    ok = True
-    behind = []  # (collection, source - target) for numeric diffs
-    head = f"{'collection':32}  {'source':>10}  {'target':>10}   result"
+
+    cw = max([len("collection")] + [len(n) for n in names]) + 2
+    tw = [max(len(t), 12) for t in tids]
+    head = f"{'collection':<{cw}}{'source':>10}  " + "  ".join(f"{t:>{w}}" for t, w in zip(tids, tw))
     print("  " + _dim(head))
-    print("  " + _dim("─" * 64))
+    print("  " + _dim("─" * len(head)))
+    ok = True
+    gaps = []   # (collection, target, source-target) numeric gaps
     for n in names:
-        up_c, down_c = last_up.get(n), last_down.get(n)
-        match = up_c == down_c
-        ok = ok and match
-        mark = _green("✓ MATCH") if match else _yel("… behind") if once else _red("✗ DIFF")
-        print(f"  {n:32}  {str(up_c):>10}  {str(down_c):>10}   {mark}")
-        if not match and isinstance(up_c, int) and isinstance(down_c, int):
-            behind.append((n, up_c - down_c))
+        cells = []
+        for t, w in zip(tids, tw):
+            sc, tc = src.get(n), per_t[t].get(n)
+            match = sc == tc
+            ok = ok and match
+            mark = _green("✓") if match else (_yel("…") if once else _red("✗"))
+            cells.append(f"{str(tc):>{w - 2}} {mark}")
+            if not match and isinstance(sc, int) and isinstance(tc, int):
+                gaps.append((n, t, sc - tc))
+        print(f"  {n:<{cw}}{str(src.get(n)):>10}  " + "  ".join(cells))
     print()
     if ok:
-        kv("result", "OK — counts match", _green)
+        kv("result", f"OK — all {len(tids)} downstream(s) match", _green)
     elif once:
-        # snapshot mode: report the gap, don't declare failure
-        gap = ", ".join(f"{n} {d:+d}" for n, d in behind) if behind else "see table"
-        kv("snapshot", f"target is behind ({gap}). If the source is being "
-           f"written, re-run to watch it catch up; a persistent gap with no "
-           f"writes means a real problem.", _yel)
+        gap = ", ".join(f"{n}@{t} {d:+d}" for n, t, d in gaps) if gaps else "see table"
+        kv("snapshot", f"behind: {gap}. If the source is being written, re-run "
+           f"to watch it catch up; a persistent gap with no writes means a "
+           f"real problem.", _yel)
     else:
-        kv("result", "FAILED — row counts diverged after retries", _red)
+        bad = sorted({t for _, t, _ in gaps}) or tids
+        kv("result", f"FAILED — diverged after retries: {', '.join(bad)}", _red)
     return ok
+
 
 
 # --------------------------------------------------------------------------- #

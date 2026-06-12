@@ -5,13 +5,14 @@ import sys
 import time
 
 from . import output
-from .output import log, _red, _cyan, _bold, _dim
+from .output import log, info, warn, _red, _cyan, _bold, _dim
 from .config import load_config, load_defaults, resolve_cluster
-from .verify import verify
+from .verify import verify, verify_many
 from .commands import (do_rebuild, do_switchover, do_force_promote, do_status,
                        do_config, do_topology, do_replicate_config, do_detach, discover_upstream,
                        do_backup, do_restore, do_clusters, do_backups,
-                       do_backup_get, do_backup_delete, for_each_downstream)
+                       do_backup_get, do_backup_delete, for_each_downstream,
+                       discover_downstreams)
 from .salvage import do_salvage
 
 
@@ -449,7 +450,18 @@ def run_command(args, parser):
                 upstream = resolve_cluster("upstream", args.upstream, config,
                                            inter=args.upstream_inter, token=args.token,
                                            pchannel_num=getattr(args, "pchannel_num", None))
-                ok = for_each_downstream(args, upstream, config, fn)
+                if args.command == "verify":
+                    ids, downstreams = discover_downstreams(args, upstream, config)
+                    if not ids:
+                        warn(f"{upstream.cluster_id} has no outgoing replication "
+                             f"edges — nothing to verify")
+                        ok = True
+                    else:
+                        info(f"downstreams of {upstream.cluster_id} (from its "
+                             f"replicate config): " + ", ".join(ids))
+                        ok = bool(downstreams) and verify_many(args, upstream, downstreams)
+                else:
+                    ok = for_each_downstream(args, upstream, config, fn)
             elif args.downstream:
                 downstream = resolve_cluster("downstream", args.downstream, config,
                                              inter=args.downstream_inter, token=args.token,
