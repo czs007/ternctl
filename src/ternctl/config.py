@@ -11,7 +11,7 @@ DEFAULT_CONFIG_PATH = os.path.expanduser("~/.ternctl.yaml")
 CONFIG_FIELDS = ("uri", "inter_uri", "token", "pchannel_num", "cdc_metrics",
                  "backup_config", "kafka_brokers")
 # Environment-wide fields stored under the top-level `defaults:` key.
-DEFAULT_FIELDS = ("backup_bin", "backup_workdir")
+DEFAULT_FIELDS = ("backup_bin", "backup_workdir", "backup_config")
 
 
 def config_path(override=None):

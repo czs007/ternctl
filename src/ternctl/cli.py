@@ -1,5 +1,6 @@
 """Argument parser, command dispatch, REPL, and the `ternctl` entry point."""
 import argparse
+import os
 import sys
 import time
 
@@ -87,6 +88,10 @@ def fill_backup_args(args, config, up_cid=None, down_cid=None):
         args.backup_workdir = defaults.get("backup_workdir") or "."
     if getattr(args, "backup_config", None) is None and up_cid:
         args.backup_config = (config.get(up_cid) or {}).get("backup_config")
+    if getattr(args, "backup_config", None) is None:
+        # archive-level default — right for shared-archive setups where
+        # list/get/delete shouldn't need a (meaningless) cluster name
+        args.backup_config = defaults.get("backup_config")
     if getattr(args, "backup_config", None) is None:
         args.backup_config = "backup.yaml"
     if hasattr(args, "backup_config_secondary"):
@@ -310,6 +315,10 @@ def build_parser():
                             help="set environment-wide defaults (milvus-backup bin / workdir)")
     c_def.add_argument("--backup-bin", default=None, metavar="PATH")
     c_def.add_argument("--backup-workdir", default=None, metavar="PATH")
+    c_def.add_argument("--backup-config", default=None, metavar="PATH",
+                       help="default archive config for `backup list/get/delete` "
+                            "when --cluster/--backup-config is omitted (shared-"
+                            "archive setups: any cluster's backup yaml works)")
     c_def.add_argument("--config", default=None, metavar="PATH")
     c_list = csub.add_parser("list", help="list configured clusters")
     c_list.add_argument("--config", default=None, metavar="PATH")
@@ -410,12 +419,16 @@ def run_command(args, parser):
             return
 
         if args.command == "backup":
-            # --backup-config / bin / workdir resolvable from the config file.
-            if not args.cluster and not args.backup_config:
-                raise RuntimeError("give --cluster NAME (config file) or --backup-config PATH")
+            # --backup-config / bin / workdir resolvable from the config file
+            # (explicit flag > --cluster entry > defaults.backup_config).
             config = load_config(getattr(args, "config", None))
             cid = (args.cluster or "").split("=", 1)[0].strip() or None
             fill_backup_args(args, config, up_cid=cid)
+            if args.backup_config == "backup.yaml" and not os.path.exists("backup.yaml"):
+                raise RuntimeError(
+                    "no archive config resolved — give --cluster NAME or "
+                    "--backup-config PATH, or set a default once: "
+                    "ternctl config set-defaults --backup-config /abs/path.yaml")
             {"create": do_backup, "list": do_backups, "get": do_backup_get,
              "restore": do_restore, "delete": do_backup_delete}[args.backup_command](args)
             return
