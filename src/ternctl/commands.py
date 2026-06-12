@@ -284,21 +284,44 @@ def do_switchover(args, config):
     info("point application writes at the new primary; old primary now receives via CDC")
 
 def do_force_promote(args, target):
+    # Pre-flight BEFORE the confirmation prompt: force-promote only applies to
+    # a configured SECONDARY. Asking a human to solemnly confirm an operation
+    # that is going to be refused anyway is ceremony in the wrong order.
+    sources, view_ok = [], True
+    try:
+        cfg = get_replicate_view(target,
+                                 getattr(args, "rpc_retries", None),
+                                 getattr(args, "rpc_timeout", None))
+        sources = sorted({t.source_cluster_id for t in cfg.cross_cluster_topology
+                          if t.target_cluster_id == target.cluster_id})
+        outgoing = sorted({t.target_cluster_id for t in cfg.cross_cluster_topology
+                           if t.source_cluster_id == target.cluster_id})
+        if not sources:
+            if outgoing:
+                raise RuntimeError(
+                    f"{target.cluster_id} is a PRIMARY "
+                    f"({target.cluster_id} → {', '.join(outgoing)}) — force-promote "
+                    f"promotes a SECONDARY; nothing to do here")
+            raise RuntimeError(
+                f"{target.cluster_id} is INDEPENDENT (no replication edges) — "
+                f"force-promote requires a configured secondary; nothing to promote")
+    except RuntimeError as e:
+        if "INDEPENDENT" in str(e) or "PRIMARY" in str(e):
+            raise
+        view_ok = False
+        warn(f"could not read {target.cluster_id}'s replicate view ({e}) — "
+             f"cannot verify it is a secondary; proceeding on your confirmation")
+
     # Salvage-source auto-discovery: the standby's own replicate config records
     # its incoming edge — its source IS the (dead) primary whose checkpoint we
     # must snapshot before the role flips. Opting OUT (--no-salvage) is the
     # explicit action, because skipping the prefetch makes the old primary's
     # in-flight data unrecoverable (see #50344 / HANDOFF §3.2).
     if not args.salvage_source_cluster_id and not getattr(args, "no_salvage", False):
-        try:
-            cfg = get_replicate_view(target)
-            sources = [t.source_cluster_id for t in cfg.cross_cluster_topology
-                       if t.target_cluster_id == target.cluster_id]
-        except RuntimeError as e:
-            sources = []
-            warn(f"salvage-source auto-discovery failed ({e}) — "
-                 f"proceeding WITHOUT prefetch; pass --salvage-source-cluster-id "
-                 f"explicitly to capture one")
+        if not view_ok:
+            warn("salvage-source auto-discovery unavailable (view unreadable) — "
+                 "proceeding WITHOUT prefetch; pass --salvage-source-cluster-id "
+                 "explicitly to capture one")
         if len(sources) == 1:
             args.salvage_source_cluster_id = sources[0]
             info(f"salvage source auto-discovered from {target.cluster_id}'s "
@@ -308,6 +331,15 @@ def do_force_promote(args, target):
             warn(f"{target.cluster_id} has {len(sources)} incoming edges "
                  f"({', '.join(sources)}) — cannot pick a salvage source "
                  f"automatically, pass --salvage-source-cluster-id")
+    if not getattr(args, "yes", False):
+        ans = input(
+            f"\nFORCE-PROMOTE will make '{target.cluster_id}' an independent primary.\n"
+            f"Data written to the OLD primary after the CDC lag horizon will be LOST.\n"
+            f"Type 'force-promote' to confirm: "
+        ).strip()
+        if ans != "force-promote":
+            info("aborted")
+            sys.exit(1)
     do_prefetch = bool(args.salvage_source_cluster_id)
     subtitle = (
         f"target: {_cyan(target.cluster_id)} ({target.uri})\n"

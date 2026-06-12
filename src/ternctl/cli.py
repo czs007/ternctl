@@ -381,15 +381,6 @@ def run_command(args, parser):
             target = resolve_cluster("target", args.target, config,
                                      inter=args.target_inter, token=args.token,
                                      pchannel_num=getattr(args, "pchannel_num", None))
-            if not args.yes:
-                ans = input(
-                    f"\nFORCE-PROMOTE will make '{target.cluster_id}' an independent primary.\n"
-                    f"Data written to the OLD primary after the CDC lag horizon will be LOST.\n"
-                    f"Type 'force-promote' to confirm: "
-                ).strip()
-                if ans != "force-promote":
-                    log("aborted")
-                    sys.exit(1)
             do_force_promote(args, target)
             return
 
