@@ -85,7 +85,9 @@ def fill_backup_args(args, config, up_cid=None, down_cid=None):
     if getattr(args, "backup_name", None) is None:
         # Embed the source cluster in the name: backup meta records NO origin
         # cluster, so the name is the only attribution a shared archive gets.
-        tag = (up_cid + "_") if up_cid else ""
+        # milvus-backup only accepts [A-Za-z0-9_] in names — sanitize the id
+        # (cluster-b → cluster_b).
+        tag = (re.sub(r"[^A-Za-z0-9_]", "_", up_cid) + "_") if up_cid else ""
         args.backup_name = f"ternctl_backup_{tag}{time.strftime('%Y%m%d_%H%M%S')}"
     if getattr(args, "backup_bin", None) is None:
         args.backup_bin = defaults.get("backup_bin") or "./milvus-backup"
