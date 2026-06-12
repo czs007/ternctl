@@ -10,7 +10,7 @@ from .verify import verify
 from .commands import (do_rebuild, do_switchover, do_force_promote, do_status,
                        do_config, do_topology, do_replicate_config, do_break_topology,
                        do_backup, do_restore, do_clusters, do_backups,
-                       for_each_downstream)
+                       do_backup_get, do_backup_delete, for_each_downstream)
 from .salvage import do_salvage
 
 
@@ -221,55 +221,50 @@ def build_parser():
                              help="delete the replication edge between two clusters (cleanup/teardown)")
     add_common(p_break)
 
+    def _backup_common(p, cluster_required=True, cluster_help="the cluster (config NAME or NAME=URI)"):
+        p.add_argument("--cluster", required=cluster_required, metavar="NAME[=URI]",
+                       help=cluster_help)
+        p.add_argument("--config", default=None, metavar="PATH",
+                       help="ternctl config file (default ~/.ternctl.yaml)")
+        g = p.add_argument_group("milvus-backup (optional if set in ~/.ternctl.yaml)")
+        g.add_argument("--backup-bin", default=None)
+        g.add_argument("--backup-workdir", default=None)
+        g.add_argument("--backup-config", default=None, metavar="PATH",
+                       help="milvus-backup config; default: the --cluster's backup_config")
+        return g
+
     p_backup = sub.add_parser("backup",
-                              help="snapshot a single cluster via milvus-backup (e.g. before reinstalling it)")
-    p_backup.add_argument("--cluster", required=True, metavar="NAME[=URI]",
-                          help="the cluster to back up (config NAME or NAME=URI)")
-    p_backup.add_argument("--config", default=None, metavar="PATH",
-                          help="ternctl config file (default ~/.ternctl.yaml)")
-    bg = p_backup.add_argument_group("milvus-backup (optional if set in ~/.ternctl.yaml)")
-    bg.add_argument("--backup-bin", default=None)
-    bg.add_argument("--backup-workdir", default=None)
-    bg.add_argument("--backup-name", required=True, help="name for the backup")
-    bg.add_argument("--backup-config", default=None, metavar="PATH",
-                    help="milvus-backup config pointing at this cluster (its milvus / "
-                         "minio / etcd); default: the --cluster's backup_config")
-    bg.add_argument("--no-backup-index-extra", dest="backup_index_extra", action="store_false")
-    bg.add_argument("--backup-create-extra", nargs=argparse.REMAINDER, default=[])
-
-    p_backups = sub.add_parser("backups",
-                               help="list backups in a backup archive (milvus-backup list; --detail adds meta)")
-    p_backups.add_argument("--cluster", default=None, metavar="NAME",
-                           help="config-file cluster whose backup_config archive to list "
-                                "(alternative to --backup-config)")
-    p_backups.add_argument("--backup-bin", default=None)
-    p_backups.add_argument("--backup-workdir", default=None)
-    p_backups.add_argument("--backup-config", default=None, metavar="PATH",
-                           help="milvus-backup config whose archive bucket to list")
-    p_backups.add_argument("--config", default=None, metavar="PATH",
-                           help="ternctl config file (default ~/.ternctl.yaml)")
-    p_backups.add_argument("--detail", action="store_true",
-                           help="also read each backup's meta: size / milvus version / "
-                                "state / collections (one extra archive read per backup)")
-
-    p_restore = sub.add_parser("restore",
-                               help="restore a milvus-backup snapshot into an INDEPENDENT cluster (rollback / clone)")
-    p_restore.add_argument("--cluster", required=True, metavar="NAME[=URI]",
-                           help="the cluster to restore into (config NAME or NAME=URI)")
-    p_restore.add_argument("--config", default=None, metavar="PATH",
-                           help="ternctl config file (default ~/.ternctl.yaml)")
-    rg = p_restore.add_argument_group("milvus-backup (optional if set in ~/.ternctl.yaml)")
-    rg.add_argument("--backup-bin", default=None)
-    rg.add_argument("--backup-workdir", default=None)
-    rg.add_argument("--backup-name", required=True, help="name of the backup to restore")
-    rg.add_argument("--backup-config", default=None, metavar="PATH",
-                    help="milvus-backup config pointing at the target cluster; "
-                         "default: the --cluster's backup_config")
-    rg.add_argument("--restore-suffix", default=None, metavar="SUFFIX",
-                    help="restore into NEW collections named <original><suffix> "
-                         "(leaves the originals untouched — safest for rollback/compare)")
-    rg.add_argument("--restore-index", action="store_true", help="also rebuild indexes")
-    rg.add_argument("--restore-extra", nargs=argparse.REMAINDER, default=[])
+                              help="manage backups: create / list / get / restore / delete")
+    bsub = p_backup.add_subparsers(dest="backup_command", required=True)
+    b_create = bsub.add_parser("create",
+                               help="snapshot a cluster (e.g. before reinstalling it)")
+    g = _backup_common(b_create, cluster_help="the cluster to back up")
+    g.add_argument("--backup-name", required=True, help="name for the backup")
+    g.add_argument("--no-backup-index-extra", dest="backup_index_extra", action="store_false")
+    g.add_argument("--backup-create-extra", nargs=argparse.REMAINDER, default=[])
+    b_list = bsub.add_parser("list",
+                             help="list backups in the archive (--detail adds meta)")
+    _backup_common(b_list, cluster_required=False,
+                   cluster_help="config-file cluster whose backup_config archive to list")
+    b_list.add_argument("--detail", action="store_true",
+                        help="also read each backup's meta: size / milvus version / "
+                             "state / collections (one extra archive read per backup)")
+    b_get = bsub.add_parser("get", help="show one backup's meta")
+    _backup_common(b_get, cluster_required=False)
+    b_get.add_argument("--backup-name", "-n", required=True, help="backup to inspect")
+    b_restore = bsub.add_parser("restore",
+                                help="restore a snapshot into an INDEPENDENT cluster (rollback / clone)")
+    g = _backup_common(b_restore, cluster_help="the cluster to restore into")
+    g.add_argument("--backup-name", required=True, help="name of the backup to restore")
+    g.add_argument("--restore-suffix", default=None, metavar="SUFFIX",
+                   help="restore into NEW collections named <original><suffix> "
+                        "(leaves the originals untouched — safest for rollback/compare)")
+    g.add_argument("--restore-index", action="store_true", help="also rebuild indexes")
+    g.add_argument("--restore-extra", nargs=argparse.REMAINDER, default=[])
+    b_delete = bsub.add_parser("delete", help="delete one backup from the archive")
+    _backup_common(b_delete, cluster_required=False)
+    b_delete.add_argument("--backup-name", "-n", required=True, help="backup to delete")
+    b_delete.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
 
     p_clusters = sub.add_parser("clusters",
                                 help="list clusters from the config file (--probe checks reachability)")
@@ -400,19 +395,15 @@ def run_command(args, parser):
             do_salvage(args)
             return
 
-        if args.command in ("backup", "restore", "backups"):
+        if args.command == "backup":
             # --backup-config / bin / workdir resolvable from the config file.
-            if args.command == "backups" and not args.cluster and not args.backup_config:
+            if not args.cluster and not args.backup_config:
                 raise RuntimeError("give --cluster NAME (config file) or --backup-config PATH")
             config = load_config(getattr(args, "config", None))
             cid = (args.cluster or "").split("=", 1)[0].strip() or None
             fill_backup_args(args, config, up_cid=cid)
-            if args.command == "backup":
-                do_backup(args)
-            elif args.command == "restore":
-                do_restore(args)
-            else:
-                do_backups(args)
+            {"create": do_backup, "list": do_backups, "get": do_backup_get,
+             "restore": do_restore, "delete": do_backup_delete}[args.backup_command](args)
             return
 
         if args.command == "topology":
@@ -498,6 +489,8 @@ def _completion_candidates(parser, buf):
         cands = sorted(choices)
     elif prev_toks[0] in choices:
         prev = prev_toks[-1]
+        sub = choices[prev_toks[0]]
+        nested = _subparser_choices(sub)  # e.g. backup create/list/…, config add/…
         if prev in _CLUSTER_VALUE_FLAGS and not cur.startswith("-"):
             names = cluster_names()
             head, sep, tail = cur.rpartition(",")
@@ -507,10 +500,12 @@ def _completion_candidates(parser, buf):
                 return [head + "," + n for n in names
                         if n.startswith(tail) and n != tail and n not in used]
             cands = names
-        elif prev_toks[0] == "config" and len(prev_toks) == 1:
-            cands = ["add", "list", "show", "remove", "set-defaults"]
+        elif nested and len(prev_toks) == 1:
+            cands = sorted(nested)  # second word = the subcommand
         else:
-            sub = choices[prev_toks[0]]
+            # flags come from the nested subparser when one is in play
+            if nested and len(prev_toks) >= 2 and prev_toks[1] in nested:
+                sub = nested[prev_toks[1]]
             cands = sorted({o for a in sub._actions for o in a.option_strings
                             if o.startswith("--")})
     else:

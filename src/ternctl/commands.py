@@ -16,7 +16,7 @@ from .replication import (build_replicate_config, apply_replicate_config,
                           prefetch_salvage_checkpoints, call_with_retry,
                           RPC_RETRIES, RPC_TIMEOUT)
 from .backup import (backup_create, restore_secondary, restore_backup,
-                     backup_list_names, backup_get_info)
+                     backup_list_names, backup_get_info, run_backup_capture)
 from .verify import verify
 
 
@@ -170,7 +170,7 @@ def do_backup(args):
     header("DONE")
     info(f"backup '{_bold(args.backup_name)}' created (workdir: {args.backup_workdir}).")
     info(f"safe to reinstall {_cyan(cluster.cluster_id)} now — restore later with "
-         f"{_bold('ternctl restore')}, or rebuild a fresh standby from the current primary.")
+         f"{_bold('ternctl backup restore')}, or rebuild a fresh standby from the current primary.")
 
 
 def do_restore(args):
@@ -510,6 +510,49 @@ def for_each_downstream(args, upstream, config, fn):
         result = fn(args, upstream, downstream)
         all_ok = all_ok and (result is None or bool(result))
     return all_ok
+
+
+def do_backup_get(args):
+    """Show one backup's meta (backup get -n NAME)."""
+    header("BACKUP", f"meta of {_cyan(args.backup_name)}")
+    d = backup_get_info(args, args.backup_name)
+    if not d:
+        raise RuntimeError(
+            f"could not read meta for '{args.backup_name}'. If `backup list` "
+            f"warns 'can not read backup info' for it, this is a GHOST from an "
+            f"interrupted create (binlogs written, meta never was) — "
+            f"milvus-backup cannot delete those either; remove the S3 prefix "
+            f"<backupRootPath>/{args.backup_name}/ yourself (see HANDOFF §2.2).")
+    kv("name", d.get("name", "?"), _green)
+    kv("state_code", str(d.get("state_code", "?")))
+    kv("size", f"{d.get('size', '?')}B")
+    kv("milvus_version", d.get("milvus_version", "?"))
+    cols = [c.get("collection_name", "?") for c in d.get("collection_backups") or []]
+    kv("collections", ", ".join(cols) or "-")
+
+
+def do_backup_delete(args):
+    """Delete one backup from the archive (backup delete -n NAME)."""
+    header("BACKUP DELETE", _cyan(args.backup_name))
+    if not getattr(args, "yes", False):
+        ans = input(f"Type the backup name ({args.backup_name}) to confirm deletion: ").strip()
+        if ans != args.backup_name:
+            info("aborted")
+            sys.exit(1)
+    try:
+        run_backup_capture(args, ["--config", args.backup_config,
+                                  "delete", "-n", args.backup_name])
+    except RuntimeError as e:
+        msg = str(e)
+        if "read backup meta" in msg or "does not exist" in msg:
+            raise RuntimeError(
+                f"milvus-backup cannot delete '{args.backup_name}' — its meta is "
+                f"missing (ghost from an interrupted create). ternctl will not "
+                f"touch S3 for you: remove the prefix "
+                f"<backupRootPath>/{args.backup_name}/ in the backup bucket "
+                f"yourself (see HANDOFF §2.2).") from e
+        raise
+    info(f"'{args.backup_name}' deleted from the archive")
 
 
 def do_config(args):
