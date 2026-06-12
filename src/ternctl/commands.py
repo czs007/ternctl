@@ -198,6 +198,26 @@ def do_switchover(args, upstream, downstream):
     header("SWITCHOVER",
            f"current primary: {_cyan(upstream.cluster_id)} ({upstream.uri})\n"
            f"current standby: {_cyan(downstream.cluster_id)} ({downstream.uri})")
+    # Direction pre-flight (read-only): --upstream must be the CURRENT primary
+    # of this edge. A reversed invocation used to be accepted verbatim — the
+    # "reversed" config went to a STANDBY, which cannot execute topology
+    # changes and just parks the RPC until its 60s timeout. Refuse instantly
+    # with the corrected command instead.
+    edges = [(t.source_cluster_id, t.target_cluster_id)
+             for t in get_replicate_view(upstream).cross_cluster_topology]
+    fwd = (upstream.cluster_id, downstream.cluster_id)
+    rev = (downstream.cluster_id, upstream.cluster_id)
+    if fwd not in edges:
+        if rev in edges:
+            raise RuntimeError(
+                f"direction reversed: the current primary of this edge is "
+                f"{downstream.cluster_id}, not {upstream.cluster_id}. Run:  "
+                f"ternctl switchover --upstream {downstream.cluster_id} "
+                f"--downstream {upstream.cluster_id}")
+        raise RuntimeError(
+            f"no {upstream.cluster_id} → {downstream.cluster_id} replication "
+            f"edge exists — switchover reverses an EXISTING edge. See "
+            f"`ternctl topology`; to create the edge use `ternctl rebuild`.")
     step("1/2", f"apply reversed topology to {upstream.cluster_id}")
     down2up = build_replicate_config(upstream, downstream, source=downstream, target=upstream)
     apply_replicate_config(upstream, down2up, _quiet=True); done()
