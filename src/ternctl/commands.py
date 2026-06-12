@@ -958,7 +958,7 @@ def do_replicate_config(args, upstream, downstream):
     # accepts the config directly — bootstrap path — so this order is safe
     # there too.)
     targets = {"upstream": [upstream], "downstream": [downstream],
-               "both": [source, target]}[args.target]
+               "both": [source, target]}[args.apply_to]
     # Implicit-removal guard: UpdateReplicateConfiguration is full-state
     # replacement, so a raw config silently tears down every edge it doesn't
     # mention (observed live four times now). Removing edges must be explicit:
