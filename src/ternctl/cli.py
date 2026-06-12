@@ -253,7 +253,7 @@ def build_parser():
     b_create = bsub.add_parser("create",
                                help="snapshot a cluster (e.g. before reinstalling it)")
     g = _backup_common(b_create, cluster_help="the cluster to back up")
-    g.add_argument("--backup-name", required=True, help="name for the backup")
+    g.add_argument("--backup-name", "-n", required=True, help="name for the backup")
     g.add_argument("--no-backup-index-extra", dest="backup_index_extra", action="store_false")
     g.add_argument("--backup-create-extra", nargs=argparse.REMAINDER, default=[])
     b_list = bsub.add_parser("list",
@@ -269,7 +269,7 @@ def build_parser():
     b_restore = bsub.add_parser("restore",
                                 help="restore a snapshot into an INDEPENDENT cluster (rollback / clone)")
     g = _backup_common(b_restore, cluster_help="the cluster to restore into")
-    g.add_argument("--backup-name", required=True, help="name of the backup to restore")
+    g.add_argument("--backup-name", "-n", required=True, help="name of the backup to restore")
     g.add_argument("--restore-suffix", default=None, metavar="SUFFIX",
                    help="restore into NEW collections named <original><suffix> "
                         "(leaves the originals untouched — safest for rollback/compare)")
