@@ -943,6 +943,30 @@ def do_replicate_config(args, upstream, downstream):
     # there too.)
     targets = {"upstream": [upstream], "downstream": [downstream],
                "both": [source, target]}[args.target]
+    # Implicit-removal guard: UpdateReplicateConfiguration is full-state
+    # replacement, so a raw config silently tears down every edge it doesn't
+    # mention (observed live four times now). Removing edges must be explicit:
+    # --merge keeps them, --replace means exactly this config.
+    if not getattr(args, "merge", False) and not getattr(args, "replace", False):
+        new_edges = {(t.source_cluster_id, t.target_cluster_id)
+                     for t in config.cross_cluster_topology}
+        for cluster in targets:
+            try:
+                cur = get_replicate_view(cluster,
+                                         getattr(args, "rpc_retries", None),
+                                         getattr(args, "rpc_timeout", None))
+            except RuntimeError:
+                continue  # no readable view → nothing to lose
+            removed = {(t.source_cluster_id, t.target_cluster_id)
+                       for t in cur.cross_cluster_topology} - new_edges
+            if removed:
+                lost = ", ".join(f"{s_}→{t_}" for s_, t_ in sorted(removed))
+                raise RuntimeError(
+                    f"refusing: this config would IMPLICITLY remove edge(s) "
+                    f"{lost} from {cluster.cluster_id}'s topology "
+                    f"(UpdateReplicateConfiguration is full-state replacement). "
+                    f"Use --merge to ADD the new edge keeping existing ones, "
+                    f"or --replace if this exact config is what you mean.")
     for cluster in targets:
         apply_replicate_config(cluster, config)
 

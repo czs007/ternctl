@@ -231,6 +231,11 @@ def build_parser():
                              "arrived and matches. 'both' = source first (execute), then "
                              "target (confirm) — the strong-consistency pattern from the "
                              "CDC reference doc.")
+    p_repl.add_argument("--replace", action="store_true",
+                        help="explicitly allow FULL replacement — edges absent from "
+                             "this config are torn down on the receiving cluster. "
+                             "Without --merge/--replace, a config that would "
+                             "implicitly remove edges is refused.")
     p_repl.add_argument("--merge", action="store_true",
                         help="merge the edge into the source's CURRENT topology "
                              "instead of replacing it (UpdateReplicateConfiguration "
