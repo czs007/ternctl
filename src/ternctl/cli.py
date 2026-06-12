@@ -139,9 +139,6 @@ def build_parser():
     g.add_argument("--target", required=True, metavar="NAME[=URI]",
                    help="the standby that should END UP primary; its current "
                         "primary is auto-discovered from its own replicate config")
-    g.add_argument("--upstream", default=None, metavar="NAME[=URI]",
-                   help="optional assertion of the target's current primary — "
-                        "errors if it doesn't match (never required)")
     g.add_argument("--token", default=None)
     add_rpc_opts(p_switch)
 

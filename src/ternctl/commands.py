@@ -223,19 +223,15 @@ def do_switchover(args, config):
     if len(incoming) > 1:
         raise RuntimeError(
             f"{target.cluster_id} reports multiple upstreams "
-            f"({', '.join(incoming)}) — pass --upstream to pick the edge")
+            f"({', '.join(incoming)}) — a pathological residual state; repair "
+            f"it first (ternctl detach --downstream {target.cluster_id} "
+            f"--upstream <extra-edge-source>), then switch over")
     up_cid = incoming[0]
-    asserted = getattr(args, "upstream", None)
-    if asserted and asserted.split("=", 1)[0].strip() != up_cid:
-        raise RuntimeError(
-            f"{target.cluster_id}'s upstream is {up_cid}, not "
-            f"{asserted.split('=', 1)[0].strip()}")
-    if not asserted and up_cid not in config:
+    if up_cid not in config:
         raise RuntimeError(
             f"discovered current primary '{up_cid}' is not in the config file — "
-            f"add it (ternctl config add {up_cid} --uri ...) or pass "
-            f"--upstream {up_cid}=http://...:19530")
-    upstream = resolve_cluster("upstream", asserted or up_cid, config,
+            f"add it first: ternctl config add {up_cid} --uri ...")
+    upstream = resolve_cluster("upstream", up_cid, config,
                                token=args.token, pchannel_num=getattr(args, "pchannel_num", None))
 
     # Old primary's FULL topology, re-rooted at the target: every sibling
