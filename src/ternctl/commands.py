@@ -604,8 +604,6 @@ def do_config(args):
             defaults["backup_bin"] = os.path.abspath(args.backup_bin)
         if args.backup_workdir is not None:
             defaults["backup_workdir"] = os.path.abspath(args.backup_workdir)
-        if getattr(args, "backup_config", None) is not None:
-            defaults["backup_config"] = os.path.abspath(args.backup_config)
         saved = save_config(cfg, getattr(args, "config", None), defaults=defaults)
         header("CONFIG", f"saved defaults to {saved}")
         for k, v in sorted(defaults.items()):
