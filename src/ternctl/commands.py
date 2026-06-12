@@ -196,19 +196,20 @@ def do_restore(args):
 
 
 def do_switchover(args, config):
-    """Graceful role flip: make --target the primary of its edge (RPO = 0).
-    The target's CURRENT primary is auto-discovered from the target's own
-    replicate config — the operator declares the desired END STATE instead of
-    asserting the current roles (a stale mental model of "who is primary now"
-    can no longer flip the pair the wrong way; at worst it's a no-op error)."""
+    """Graceful role flip: make --target the primary (RPO = 0). The target's
+    current primary is auto-discovered from the target's own replicate config.
+    SIBLING standbys of the old primary are CARRIED to the new one — the
+    config sent is the old primary's full topology re-rooted at the target
+    (UpdateReplicateConfiguration is full-state replacement: a bare two-
+    cluster config would tear every sibling edge down; observed live)."""
     target = resolve_cluster("target", args.target, config,
                              token=args.token, pchannel_num=args.pchannel_num)
-    view = get_replicate_view(target,
-                              getattr(args, "rpc_retries", None),
-                              getattr(args, "rpc_timeout", None))
-    incoming = sorted({t.source_cluster_id for t in view.cross_cluster_topology
+    tview = get_replicate_view(target,
+                               getattr(args, "rpc_retries", None),
+                               getattr(args, "rpc_timeout", None))
+    incoming = sorted({t.source_cluster_id for t in tview.cross_cluster_topology
                        if t.target_cluster_id == target.cluster_id})
-    outgoing = sorted({t.target_cluster_id for t in view.cross_cluster_topology
+    outgoing = sorted({t.target_cluster_id for t in tview.cross_cluster_topology
                        if t.source_cluster_id == target.cluster_id})
     if not incoming:
         if outgoing:
@@ -236,21 +237,55 @@ def do_switchover(args, config):
             f"--upstream {up_cid}=http://...:19530")
     upstream = resolve_cluster("upstream", asserted or up_cid, config,
                                token=args.token, pchannel_num=args.pchannel_num)
+
+    # Old primary's FULL topology, re-rooted at the target: every sibling
+    # standby keeps replicating, now from the new primary (the CDC fence
+    # rewires their source automatically when this config reaches them).
+    uview = get_replicate_view(upstream,
+                               getattr(args, "rpc_retries", None),
+                               getattr(args, "rpc_timeout", None))
+    siblings = sorted({t.target_cluster_id for t in uview.cross_cluster_topology
+                       if t.source_cluster_id == upstream.cluster_id
+                       and t.target_cluster_id != target.cluster_id})
+    missing = [c for c in siblings if c not in config]
+    if missing:
+        raise RuntimeError(
+            f"sibling standby(s) {', '.join(missing)} not in the config file — "
+            f"their cluster defs must be rebuilt locally (the live view redacts "
+            f"tokens). Add them first: ternctl config add <name> --uri ...")
+    cluster_defs = [target.milvus_cluster(), upstream.milvus_cluster()] + [
+        resolve_cluster("peer", c, config, token=args.token,
+                        pchannel_num=args.pchannel_num).milvus_cluster()
+        for c in siblings]
+    edges = [(target.cluster_id, upstream.cluster_id)] + [
+        (target.cluster_id, c) for c in siblings]
+    new_config = common_pb2.ReplicateConfiguration(
+        clusters=cluster_defs,
+        cross_cluster_topology=[
+            common_pb2.CrossClusterTopology(source_cluster_id=s_,
+                                            target_cluster_id=t_)
+            for (s_, t_) in edges],
+    )
+
     header("SWITCHOVER",
            f"target (new primary): {_cyan(target.cluster_id)} ({target.uri})\n"
            f"current primary:      {_cyan(upstream.cluster_id)} ({upstream.uri})")
     info(f"current primary auto-discovered from {target.cluster_id}'s "
          f"replicate config: {up_cid}")
-    down2up = build_replicate_config(upstream, target, source=target, target=upstream)
-    step("1/2", f"apply reversed topology to {upstream.cluster_id}")
-    apply_replicate_config(upstream, down2up, _quiet=True); done()
-    step("2/2", f"apply reversed topology to {target.cluster_id}")
-    apply_replicate_config(target, down2up, _quiet=True); done()
+    if siblings:
+        info("carrying sibling standby(s) to the new primary: "
+             + ", ".join(siblings))
+    step("1/2", f"apply re-rooted topology to {upstream.cluster_id}")
+    apply_replicate_config(upstream, new_config, _quiet=True); done()
+    step("2/2", f"apply re-rooted topology to {target.cluster_id}")
+    apply_replicate_config(target, new_config, _quiet=True); done()
     header("DONE")
     kv("new primary", f"{target.cluster_id} ({target.uri})", _green)
     kv("now standby", f"{upstream.cluster_id} ({upstream.uri})", _dim)
+    if siblings:
+        kv("still standby", ", ".join(f"{c} (now ← {target.cluster_id})"
+                                      for c in siblings), _dim)
     info("point application writes at the new primary; old primary now receives via CDC")
-
 
 def do_force_promote(args, target):
     # Salvage-source auto-discovery: the standby's own replicate config records
