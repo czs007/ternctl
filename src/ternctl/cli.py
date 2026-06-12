@@ -491,6 +491,22 @@ def _subparser_choices(parser):
 # Flags whose VALUE is a cluster name from the config file.
 _CLUSTER_VALUE_FLAGS = {"--cluster", "--clusters", "--upstream", "--downstream",
                         "--target", "--source-cluster"}
+# Flags whose VALUE is a filesystem path → complete from the filesystem.
+_PATH_VALUE_FLAGS = {"--checkpoint-file", "--output", "--output-dir",
+                     "--backup-bin", "--backup-workdir",
+                     "--backup-config", "--backup-config-secondary"}
+
+
+def _path_candidates(cur):
+    """Filesystem completion: directories get a trailing '/' (keep typing),
+    files get the usual trailing space."""
+    import glob
+    import os
+    pattern = os.path.expanduser(cur) + "*"
+    out = []
+    for p in sorted(glob.glob(pattern)):
+        out.append(p + "/" if os.path.isdir(p) else p + " ")
+    return out
 
 
 def _completion_candidates(parser, buf):
@@ -528,6 +544,9 @@ def _completion_candidates(parser, buf):
         prev = prev_toks[-1]
         sub = choices[prev_toks[0]]
         nested = _subparser_choices(sub)  # e.g. backup create/list/…, config add/…
+        if prev in _PATH_VALUE_FLAGS or (not cur.startswith("-") and
+                                          cur[:1] in ("/", ".", "~")):
+            return _path_candidates(cur)
         if prev in _CLUSTER_VALUE_FLAGS and not cur.startswith("-"):
             names = cluster_names()
             head, sep, tail = cur.rpartition(",")
