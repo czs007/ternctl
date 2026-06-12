@@ -151,19 +151,19 @@ def build_parser():
     g.add_argument("--token", default=None)
     p_force.add_argument("--yes", action="store_true", help="skip the RPO confirmation prompt")
     sg = p_force.add_argument_group("salvage checkpoint prefetch (recommended for DR)")
-    sg.add_argument("--salvage-source-cluster-id", default=None,
+    sg.add_argument("--salvage-from", default=None,
                     help="cluster id of the OLD primary you may want to salvage data from. "
                          "When set, the tool snapshots the live ReplicateCheckpoint for every "
                          "target pchannel BEFORE the force_promote RPC, while GetReplicateInfo "
                          "still works. After force_promote that API is broken on an independent "
                          "primary — see milvus-io/milvus#50344. Without this flag, salvage of "
                          "in-flight messages from the dead primary is not possible.")
-    sg.add_argument("--salvage-output", default=None,
+    sg.add_argument("--checkpoint-file", default=None,
                     help="output path for the prefetched checkpoint JSON. "
                          "Default: ./salvage_checkpoint_<target>_<unix_ts>.json")
     sg.add_argument("--no-salvage", action="store_true",
                     help="skip the salvage-checkpoint prefetch entirely. Without this "
-                         "flag, omitting --salvage-source-cluster-id makes ternctl "
+                         "flag, omitting --salvage-from makes ternctl "
                          "AUTO-DISCOVER the source from the target's own replicate "
                          "configuration (its incoming edge) — the prefetch is read-only "
                          "and skipping it makes the old primary's in-flight data "
@@ -335,9 +335,9 @@ def build_parser():
     p_salvage.add_argument("--output-dir", default=None, metavar="DIR",
                            help="sweep mode: directory for per-pchannel jsonl files "
                                 "(salvage_dml_<i>.jsonl)")
-    p_salvage.add_argument("--from-checkpoint-file", default=None, metavar="PATH",
+    p_salvage.add_argument("--checkpoint-file", default=None, metavar="PATH",
                            help="salvage checkpoint JSON from `ternctl force-promote "
-                                "--salvage-source-cluster-id`. RECOMMENDED — works after "
+                                "--salvage-from`. RECOMMENDED — works after "
                                 "force-promote when live GetReplicateInfo is broken "
                                 "(milvus-io/milvus#50344).")
     p_salvage.add_argument("--from-offset", type=int, default=None,

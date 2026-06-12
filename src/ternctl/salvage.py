@@ -8,11 +8,11 @@ header + body decoded; downstream code consumes the JSONL and decides how to
 replay / archive / dedupe.
 
 Start offset is resolved in priority order:
-  --from-offset  >  --from-checkpoint-file  >  live GetReplicateInfo
+  --from-offset  >  --checkpoint-file  >  live GetReplicateInfo
 
 The checkpoint-file path is RECOMMENDED — it works after force-promote, when the
 live GetReplicateInfo API is unavailable (milvus-io/milvus#50344). Capture the
-file with `ternctl force-promote --salvage-source-cluster-id ...`.
+file with `ternctl force-promote --salvage-from ...`.
 
 Ordering: a single pchannel (one Kafka topic, partition 0) is strictly ordered
 by offset. Across pchannels, sort by the `time_tick` field (globally monotonic).
@@ -140,7 +140,7 @@ def get_salvage_checkpoint(new_primary_uri, source_cluster_id, target_pchannel,
                            token="root:Milvus"):
     """Call GetReplicateInfo on the new primary; return (kafka_offset, time_tick)
     or (None, None). NOTE: broken on an independent primary post-force-promote
-    (milvus-io/milvus#50344) — prefer --from-checkpoint-file."""
+    (milvus-io/milvus#50344) — prefer --checkpoint-file."""
     host_port = new_primary_uri.replace("http://", "").replace("https://", "").rstrip("/")
     channel = grpc.insecure_channel(host_port)
     stub = milvus_pb2_grpc.MilvusServiceStub(channel)
@@ -169,7 +169,7 @@ def get_salvage_checkpoint(new_primary_uri, source_cluster_id, target_pchannel,
 
 def load_checkpoint_file(path, pchannel):
     """Resolve a start offset from a salvage checkpoint JSON produced by
-    `ternctl force-promote --salvage-source-cluster-id`. Matches `pchannel`
+    `ternctl force-promote --salvage-from`. Matches `pchannel`
     against each entry's source_pchannel_topic / target_pchannel.
 
     Returns (start_offset, time_tick, source_cluster_id, matched_entry).
@@ -286,11 +286,11 @@ def _salvage_one(args):
 
     if not args.summary_only and not args.output:
         raise RuntimeError("--output is required unless --summary-only is set")
-    live_lookup = (args.from_checkpoint_file is None and args.from_offset is None)
+    live_lookup = (args.checkpoint_file is None and args.from_offset is None)
     if live_lookup and not (args.new_primary_uri and args.source_cluster_id):
         raise RuntimeError(
             "--new-primary-uri and --source-cluster-id are required unless "
-            "--from-checkpoint-file or --from-offset is given")
+            "--checkpoint-file or --from-offset is given")
 
     src_label = args.source_cluster_id or "(from checkpoint file)"
     mode_str = "SUMMARY ONLY (no jsonl written)" if args.summary_only else f"output → {args.output}"
@@ -303,11 +303,11 @@ def _salvage_one(args):
     if args.from_offset is not None:
         start_offset = args.from_offset
         kv("--from-offset override", f"start at offset {start_offset} (no checkpoint lookup)", _yel)
-    elif args.from_checkpoint_file is not None:
+    elif args.checkpoint_file is not None:
         print(f"  {_dim('1/3')} reading prefetched salvage checkpoint from file…")
         start_offset, cp_tt, file_src, entry = load_checkpoint_file(
-            args.from_checkpoint_file, args.source_pchannel)
-        kv("checkpoint file", args.from_checkpoint_file, _dim)
+            args.checkpoint_file, args.source_pchannel)
+        kv("checkpoint file", args.checkpoint_file, _dim)
         kv("source cluster", file_src or "?", _green)
         kv("salvage_checkpoint", f"kafka offset={entry['kafka_offset']}, time_tick={cp_tt}", _green)
         kv("start consuming at", f"offset={start_offset} (= checkpoint + 1)", _bold)
@@ -329,8 +329,8 @@ def _salvage_one(args):
             warn(f"GetReplicateInfo failed ({type(e).__name__}) — this is the known "
                  f"post-force-promote breakage (milvus-io/milvus#50344).")
             warn("Prefer the prefetch path: capture a checkpoint at force-promote time "
-                 "with `ternctl force-promote --salvage-source-cluster-id`, then pass it "
-                 "here via --from-checkpoint-file. Falling back to topic earliest.")
+                 "with `ternctl force-promote --salvage-from`, then pass it "
+                 "here via --checkpoint-file. Falling back to topic earliest.")
             start_offset = 0
     print()
 

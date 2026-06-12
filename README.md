@@ -138,7 +138,7 @@ The full surface, in order:
 1. **Baseline** — `rebuild` seeds the standby; `status` / `verify` confirm replication.
 2. **Planned failover** — `switchover` reverses the direction gracefully.
 3. **Unplanned failover** — `force-promote` promotes the standby when the primary
-   is down (bounded RPO). Pass `--salvage-source-cluster-id` to snapshot a
+   is down (bounded RPO). Pass `--salvage-from` to snapshot a
    salvage checkpoint *before* the promote, while `GetReplicateInfo` still works.
 4. **Rebuild** — bring the old primary back as the new standby.
 

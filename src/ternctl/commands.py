@@ -317,20 +317,20 @@ def do_force_promote(args, target):
     # must snapshot before the role flips. Opting OUT (--no-salvage) is the
     # explicit action, because skipping the prefetch makes the old primary's
     # in-flight data unrecoverable (see #50344 / HANDOFF §3.2).
-    if not args.salvage_source_cluster_id and not getattr(args, "no_salvage", False):
+    if not args.salvage_from and not getattr(args, "no_salvage", False):
         if not view_ok:
             warn("salvage-source auto-discovery unavailable (view unreadable) — "
-                 "proceeding WITHOUT prefetch; pass --salvage-source-cluster-id "
+                 "proceeding WITHOUT prefetch; pass --salvage-from "
                  "explicitly to capture one")
         if len(sources) == 1:
-            args.salvage_source_cluster_id = sources[0]
+            args.salvage_from = sources[0]
             info(f"salvage source auto-discovered from {target.cluster_id}'s "
                  f"replicate config: {_cyan(sources[0])} "
                  f"(pass --no-salvage to skip the prefetch)")
         elif len(sources) > 1:
             warn(f"{target.cluster_id} has {len(sources)} incoming edges "
                  f"({', '.join(sources)}) — cannot pick a salvage source "
-                 f"automatically, pass --salvage-source-cluster-id")
+                 f"automatically, pass --salvage-from")
     if not getattr(args, "yes", False):
         ans = input(
             f"\nFORCE-PROMOTE will make '{target.cluster_id}' an independent primary.\n"
@@ -340,7 +340,7 @@ def do_force_promote(args, target):
         if ans != "force-promote":
             info("aborted")
             sys.exit(1)
-    do_prefetch = bool(args.salvage_source_cluster_id)
+    do_prefetch = bool(args.salvage_from)
     subtitle = (
         f"target: {_cyan(target.cluster_id)} ({target.uri})\n"
         f"{_yel('⚠')} RPO bounded by CDC lag at failure time — NOT zero"
@@ -348,7 +348,7 @@ def do_force_promote(args, target):
     if do_prefetch:
         subtitle += (
             f"\nprefetch salvage checkpoint from source "
-            f"{_cyan(args.salvage_source_cluster_id)} before flipping role"
+            f"{_cyan(args.salvage_from)} before flipping role"
         )
     header("FORCE-PROMOTE", subtitle)
 
@@ -360,9 +360,9 @@ def do_force_promote(args, target):
         n_step = "0/1"
         step(n_step, f"snapshot ReplicateCheckpoint for {target.pchannel_num} pchannels")
         pchannels = pchannels_of(target.cluster_id, target.pchannel_num)
-        entries = prefetch_salvage_checkpoints(target, args.salvage_source_cluster_id, pchannels)
+        entries = prefetch_salvage_checkpoints(target, args.salvage_from, pchannels)
         ok = sum(1 for e in entries if e.get("status") == "ok")
-        salvage_out_path = args.salvage_output or os.path.abspath(
+        salvage_out_path = args.checkpoint_file or os.path.abspath(
             f"salvage_checkpoint_{target.cluster_id}_{int(time.time())}.json")
         try:
             ts_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -375,13 +375,13 @@ def do_force_promote(args, target):
                 "prefetched_at_unix": int(time.time()),
                 "target_cluster_id": target.cluster_id,
                 "target_uri": target.uri,
-                "source_cluster_id": args.salvage_source_cluster_id,
+                "source_cluster_id": args.salvage_from,
                 "pchannel_num": target.pchannel_num,
                 "pchannels": entries,
                 "_note": (
                     "ReplicateCheckpoint snapshot taken while target was still in "
                     "SECONDARY state, just before the force_promote RPC. Feed this "
-                    "file into ternctl salvage --from-checkpoint-file to "
+                    "file into ternctl salvage --checkpoint-file to "
                     "recover messages the old primary's WAL retained but CDC didn't "
                     "forward in time. See milvus-io/milvus#50344 for context."
                 ),
@@ -411,8 +411,8 @@ def do_force_promote(args, target):
     kv("new primary", f"{target.cluster_id} ({target.uri})  [INDEPENDENT — no standby]", _green)
     if salvage_out_path:
         kv("salvage snapshot", salvage_out_path, _bold)
-        info(f"to recover from {args.salvage_source_cluster_id}'s WAL, feed it into:")
-        info(f"  {_bold('ternctl salvage --from-checkpoint-file ' + salvage_out_path + ' --source-pchannel <topic> --kafka-brokers <hosts> --output salvage.jsonl')}")
+        info(f"to recover from {args.salvage_from}'s WAL, feed it into:")
+        info(f"  {_bold('ternctl salvage --checkpoint-file ' + salvage_out_path + ' --source-pchannel <topic> --kafka-brokers <hosts> --output salvage.jsonl')}")
     info(f"next: when the old primary recovers, run "
          f"{_bold('ternctl rebuild --upstream <new> --downstream <old>')} to re-establish a standby")
 
