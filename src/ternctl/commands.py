@@ -434,7 +434,9 @@ def do_backups(args):
     """List the backups in one backup-config's archive bucket.
     --detail additionally reads each backup's meta (one `get` per backup)."""
     header("BACKUPS",
-           f"archive of {_cyan(os.path.basename(args.backup_config))}")
+           f"archive via {_cyan(os.path.basename(args.backup_config))} — holds "
+           f"backups from EVERY cluster writing to it; --cluster picks the "
+           f"config, it does NOT filter (origin lives only in backup names)")
     names = backup_list_names(args)
     if not names:
         info("no backups found in this archive")
@@ -535,8 +537,8 @@ def do_backup_delete(args):
     """Delete one backup from the archive (backup delete -n NAME)."""
     header("BACKUP DELETE", _cyan(args.backup_name))
     if not getattr(args, "yes", False):
-        ans = input(f"Type the backup name ({args.backup_name}) to confirm deletion: ").strip()
-        if ans != args.backup_name:
+        ans = input(f"Delete '{args.backup_name}' from the archive? [y/N]: ").strip().lower()
+        if ans not in ("y", "yes"):
             info("aborted")
             sys.exit(1)
     try:
