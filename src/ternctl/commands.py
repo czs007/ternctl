@@ -941,35 +941,34 @@ def do_topology(args):
            "consistent — every edge is confirmed by both of its endpoints", _green)
 
 
-def do_replicate_config(args, upstream, downstream):
-    # The edge is always upstream→downstream — the flags mean what they say.
-    # (The old --direction down2up could silently invert them.)
+def do_attach(args, upstream, downstream):
+    """Register the upstream→downstream replication edge WITHOUT seeding data
+    (the inverse of detach). MERGE is the only default semantics: the edge is
+    added into the source's current topology, existing edges untouched — for
+    an empty/fresh pair this degenerates to the plain single-edge config.
+    --replace is the surgery channel: send exactly this single-edge config,
+    removals included (poisoned/divergent state repair)."""
     source, target = upstream, downstream
-    if getattr(args, "merge", False):
-        # Merge the edge into the SOURCE's current topology instead of
-        # replacing it — the repair/append tool for multi-downstream layouts.
-        config = merged_replicate_config(source, target)
+    if getattr(args, "replace", False):
+        config = build_replicate_config(upstream, downstream,
+                                        source=source, target=target)
     else:
-        config = build_replicate_config(upstream, downstream, source=source, target=target)
+        config = merged_replicate_config(source, target)
     # Order for "both": SOURCE first, TARGET second. Per the CDC design, only
     # the primary actually executes the change (broadcasts the
     # AlterReplicateConfigMessage into its WAL); the call to a standby is a
     # convergence BARRIER — it blocks until the config has arrived via CDC and
-    # matches. Calling the standby first on an established topology would wait
-    # on a change that hasn't been issued yet. (A still-INDEPENDENT target
-    # accepts the config directly — bootstrap path — so this order is safe
-    # there too.)
+    # matches. (A still-INDEPENDENT target accepts the config directly —
+    # bootstrap path — so this order is safe there too.)
     targets = {"upstream": [upstream], "downstream": [downstream],
                "both": [source, target]}[args.apply_to]
-    # Implicit-removal guard: UpdateReplicateConfiguration is full-state
-    # replacement, so a raw config silently tears down every edge it doesn't
-    # mention (observed live four times now). Removing edges must be explicit:
-    # --merge keeps them, --replace means exactly this config. Interactively,
-    # the operator gets the choice on the spot; in scripts (no TTY) we refuse.
-    if not getattr(args, "merge", False) and not getattr(args, "replace", False):
+    # Divergence guard: the merged config is built from the SOURCE's view, so
+    # it can never drop a source-side edge — but a receiving cluster whose own
+    # view has DIVERGED (residual edges from interrupted operations) would
+    # still lose them on apply. That repair must be explicit: --replace.
+    if not getattr(args, "replace", False):
         new_edges = {(t.source_cluster_id, t.target_cluster_id)
                      for t in config.cross_cluster_topology}
-        removed_by = {}
         for cluster in targets:
             try:
                 cur = get_replicate_view(cluster,
@@ -980,38 +979,14 @@ def do_replicate_config(args, upstream, downstream):
             removed = {(t.source_cluster_id, t.target_cluster_id)
                        for t in cur.cross_cluster_topology} - new_edges
             if removed:
-                removed_by[cluster.cluster_id] = removed
-        if removed_by:
-            lost = ", ".join(sorted({f"{s_}→{t_}" for rm in removed_by.values()
-                                     for (s_, t_) in rm}))
-            if not sys.stdin.isatty():
+                lost = ", ".join(f"{s_}→{t_}" for s_, t_ in sorted(removed))
                 raise RuntimeError(
-                    f"refusing: this config would IMPLICITLY remove edge(s) "
-                    f"{lost} (full-state replacement). Use --merge to ADD the "
-                    f"new edge keeping existing ones, or --replace if this "
-                    f"exact config is what you mean.")
-            warn(f"this config would IMPLICITLY remove edge(s): {lost}")
-            info("(UpdateReplicateConfiguration is full-state replacement)")
-            print()
-            print(f"    [m] merge    — add the new edge, KEEP existing edges ({lost} survives)")
-            print(f"    [r] {_red('REPLACE')}  — apply exactly this config; "
-                  f"{_red('the edge(s) above are TORN DOWN')}")
-            print(f"    [q] quit     — do nothing (default)")
-            ans = input("  choose [m/r/Q]: ").strip().lower()
-            if ans == "m":
-                config = merged_replicate_config(source, target)
-                info("switched to MERGE — existing edges are kept")
-            elif ans == "r":
-                ans2 = input(f"  type 'replace' to confirm tearing down {lost}: ").strip()
-                if ans2 != "replace":
-                    info("aborted")
-                    sys.exit(1)
-            else:
-                info("aborted")
-                sys.exit(1)
+                    f"{cluster.cluster_id}'s own view holds edge(s) {lost} that "
+                    f"this attach would implicitly remove — its state has "
+                    f"diverged. Inspect with `ternctl topology`; if tearing "
+                    f"those down is intended, re-run with --replace.")
     for cluster in targets:
         apply_replicate_config(cluster, config)
-
 
 def discover_upstream(args, downstream, config):
     """A standby has exactly ONE incoming edge — read it from the downstream's

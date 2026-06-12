@@ -69,7 +69,7 @@ Every command takes clusters two ways:
 | `topology` | replication forest (PRIMARY roots, standbys nested) + per-edge & overall consistency; no args = every configured cluster |
 | `verify` | compare row counts (`--once` for a single snapshot); omit `--downstream` to auto-discover |
 | `detach` | remove ONE replication edge; `--downstream` alone auto-discovers its upstream (teardown — not a pause) |
-| `replicate-config` | low-level: apply a replicate configuration directly |
+| `attach` | register an edge WITHOUT seeding data (inverse of `detach`; merge semantics — existing edges kept; `--replace` for divergent-state surgery) |
 | `backup` | `create` / `list` / `get` / `restore` / `delete` — the whole archive lifecycle (config-driven endpoints) |
 | `salvage` | recover the unforwarded WAL tail from Kafka after a force-promote; `--source-cluster NAME` sweeps ALL pchannels in one run |
 | `clusters` | list the clusters from `~/.ternctl.yaml` (`--probe` checks gRPC reachability) |

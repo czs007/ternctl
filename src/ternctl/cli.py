@@ -9,7 +9,7 @@ from .output import log, info, warn, _red, _cyan, _bold, _dim
 from .config import load_config, load_defaults, resolve_cluster
 from .verify import verify, verify_many
 from .commands import (do_rebuild, do_switchover, do_force_promote, do_status,
-                       do_config, do_topology, do_replicate_config, do_detach, discover_upstream,
+                       do_config, do_topology, do_attach, do_detach, discover_upstream,
                        do_backup, do_restore, do_clusters, do_backups,
                        do_backup_get, do_backup_delete, for_each_downstream,
                        discover_downstreams)
@@ -204,28 +204,25 @@ def build_parser():
                                "Re-run it (or `watch`) to watch the standby converge "
                                "while the source is being written.")
 
-    p_repl = sub.add_parser("replicate-config", help="raw inittarget equivalent")
-    add_common(p_repl)
-    p_repl.add_argument("--apply-to", choices=["upstream", "downstream", "both"], default="both",
-                        help="which cluster(s) to send the RPC to. Only the config's "
-                             "PRIMARY actually executes the change (it broadcasts the "
-                             "AlterReplicateConfigMessage into its WAL; the config then "
-                             "reaches standbys via CDC itself). Sending to a standby is "
-                             "a convergence BARRIER: the RPC blocks until the config has "
-                             "arrived and matches. 'both' = source first (execute), then "
-                             "target (confirm) — the strong-consistency pattern from the "
-                             "CDC reference doc.")
-    p_repl.add_argument("--replace", action="store_true",
-                        help="explicitly allow FULL replacement — edges absent from "
-                             "this config are torn down on the receiving cluster. "
-                             "Without --merge/--replace, a config that would "
-                             "implicitly remove edges is refused.")
-    p_repl.add_argument("--merge", action="store_true",
-                        help="merge the edge into the source's CURRENT topology "
-                             "instead of replacing it (UpdateReplicateConfiguration "
-                             "is full-state replacement — without --merge, applying "
-                             "to a primary that has other downstreams tears their "
-                             "edges down)")
+    p_attach = sub.add_parser("attach",
+                               help="register the upstream→downstream edge WITHOUT seeding "
+                                    "data (inverse of detach; use rebuild when the source "
+                                    "holds data the target lacks)")
+    add_common(p_attach)
+    add_rpc_opts(p_attach)
+    p_attach.add_argument("--apply-to", choices=["upstream", "downstream", "both"], default="both",
+                          help="which cluster(s) to send the RPC to. Only the config's "
+                               "PRIMARY actually executes the change (it broadcasts the "
+                               "AlterReplicateConfigMessage into its WAL; the config then "
+                               "reaches standbys via CDC itself). Sending to a standby is "
+                               "a convergence BARRIER: the RPC blocks until the config has "
+                               "arrived and matches. 'both' = source first (execute), then "
+                               "target (confirm).")
+    p_attach.add_argument("--replace", action="store_true",
+                          help="surgery: send exactly the single-edge config — edges absent "
+                               "from it are TORN DOWN on the receiving cluster (divergent-"
+                               "state repair). Default semantics is MERGE: existing edges "
+                               "are always kept.")
 
     p_detach = sub.add_parser("detach",
                               help="remove ONE replication edge (upstream→downstream); "
@@ -484,8 +481,8 @@ def run_command(args, parser):
         elif args.command == "verify":
             ok = verify(args, upstream, downstream)
             sys.exit(0 if ok else 1)
-        elif args.command == "replicate-config":
-            do_replicate_config(args, upstream, downstream)
+        elif args.command == "attach":
+            do_attach(args, upstream, downstream)
 
     except RuntimeError as exc:
         log(f"ERROR: {exc}")
