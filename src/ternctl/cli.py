@@ -14,6 +14,7 @@ from .commands import (do_rebuild, do_switchover, do_force_promote, do_status,
                        do_backup_get, do_backup_delete, for_each_downstream,
                        discover_downstreams)
 from .salvage import do_salvage
+from .replay import do_replay
 
 
 # --------------------------------------------------------------------------- #
@@ -317,6 +318,24 @@ def build_parser():
     c_rm = csub.add_parser("remove", help="remove a cluster")
     c_rm.add_argument("name")
 
+    p_replay = sub.add_parser("replay",
+                               help="reconcile a salvage dump into the NEW primary "
+                                    "(fill gaps only; conflicts reported, never guessed)")
+    p_replay.add_argument("--from-dir", required=True, metavar="DIR",
+                          help="directory of salvage *.jsonl files (ternctl salvage --output-dir)")
+    p_replay.add_argument("--into", required=True, metavar="NAME[=URI]",
+                          help="the NEW primary to recover the stranded rows into")
+    p_replay.add_argument("--collections", default=None, metavar="A,B",
+                          help="restrict replay to these collections")
+    p_replay.add_argument("--dry-run", action="store_true",
+                          help="classify and report only — no writes, no prompt")
+    p_replay.add_argument("--overwrite", action="store_true",
+                          help="DANGEROUS: the dump wins over the target — existing keys "
+                               "are overwritten / deleted per the dump. Only when you KNOW "
+                               "no post-failover write touched these keys.")
+    p_replay.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
+    p_replay.add_argument("--token", default=None)
+
     p_salvage = sub.add_parser("salvage",
                                help="recover WAL messages from Kafka using a salvage checkpoint")
     p_salvage.add_argument("--source-cluster", default=None, metavar="NAME",
@@ -394,6 +413,12 @@ def run_command(args, parser):
 
         if args.command == "salvage":
             do_salvage(args)
+            return
+
+        if args.command == "replay":
+            config = load_config(getattr(args, "config", None))
+            into = resolve_cluster("into", args.into, config, token=args.token)
+            do_replay(args, into)
             return
 
         if args.command == "backup":
@@ -490,9 +515,9 @@ def _subparser_choices(parser):
 
 # Flags whose VALUE is a cluster name from the config file.
 _CLUSTER_VALUE_FLAGS = {"--cluster", "--clusters", "--upstream", "--downstream",
-                        "--target", "--source-cluster"}
+                        "--target", "--source-cluster", "--into"}
 # Flags whose VALUE is a filesystem path → complete from the filesystem.
-_PATH_VALUE_FLAGS = {"--checkpoint-file", "--output", "--output-dir",
+_PATH_VALUE_FLAGS = {"--checkpoint-file", "--output", "--output-dir", "--from-dir",
                      "--backup-bin", "--backup-workdir",
                      "--backup-config", "--backup-config-secondary"}
 

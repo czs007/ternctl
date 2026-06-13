@@ -71,7 +71,8 @@ Every command takes clusters two ways:
 | `detach` | remove ONE replication edge; `--downstream` alone auto-discovers its upstream (teardown — not a pause) |
 | `attach` | register an edge WITHOUT seeding data (inverse of `detach`; merge semantics — existing edges kept; `--replace` for divergent-state surgery) |
 | `backup` | `create` / `list` / `get` / `restore` / `delete` — the whole archive lifecycle (config-driven endpoints) |
-| `salvage` | recover the unforwarded WAL tail from Kafka after a force-promote; `--source-cluster NAME` sweeps ALL pchannels in one run |
+| `salvage` | dump the unforwarded WAL tail from Kafka after a force-promote; `--source-cluster NAME` sweeps ALL pchannels in one run |
+| `replay` | reconcile a salvage dump into the NEW primary — fill gaps only (existing keys never touched; conflicts reported, `--overwrite` to let the dump win) |
 | `clusters` | list the clusters from `~/.ternctl.yaml` (`--probe` checks gRPC reachability) |
 | `config` | manage `~/.ternctl.yaml` (`add` / `list` / `show` / `remove` / `set-defaults`) |
 | `repl` | interactive shell — run subcommands without re-typing the launcher |
