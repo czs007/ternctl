@@ -880,29 +880,48 @@ def do_topology(args):
     print()
 
     # ── Forest render ──────────────────────────────────────────────────
-    # Each PRIMARY is a tree root with its standbys nested beneath it;
-    # INDEPENDENT clusters are childless roots; unreachable clusters (role
-    # unknown) come last. An edge only one endpoint reports is flagged inline.
+    # ONLY edges confirmed by both endpoints build the tree and decide roles.
+    # A claim some reachable endpoint denies is a RESIDUAL (e.g. the stale
+    # edge a live old-primary keeps after a force-promote): it must not paint
+    # the denier with a role it doesn't have — it renders as a dashed warning
+    # under the claimer, with the repair command.
     all_edges = {}
     for cid, v in views.items():
         for e in v["edges"]:
             all_edges.setdefault(e, set()).add(cid)
-    children, parents = {}, {}
-    for (s_, t_) in all_edges:
-        children.setdefault(s_, []).append(t_)
-        parents.setdefault(t_, []).append(s_)
-
     queried = [cid for cid, _ in specs]
     reachable = {cid for cid in queried if not views[cid]["error"]}
 
-    def edge_flag(s_, t_):
-        # an endpoint that is reachable but does NOT report the edge → residual
-        reporters = all_edges.get((s_, t_), set())
-        missing = [c for c in (s_, t_) if c in reachable and c not in reporters]
-        if missing:
-            return "  " + _yel("⚠ only " + ", ".join(sorted(reporters)) +
-                               " reports this edge")
-        return ""
+    confirmed, residual = {}, {}
+    for e, reporters in all_edges.items():
+        deniers = [c for c in e if c in reachable and c not in reporters]
+        (residual if deniers else confirmed)[e] = reporters
+
+    children, parents = {}, {}
+    for (s_, t_) in confirmed:
+        children.setdefault(s_, []).append(t_)
+        parents.setdefault(t_, []).append(s_)
+
+    def self_role(cid):
+        if cid in children:
+            return "PRIMARY"
+        if cid in parents:
+            return "STANDBY"
+        return "INDEPENDENT"
+
+    def residual_lines(cid, prefix):
+        """Dashed warning lines for every residual claim this cluster makes."""
+        for (s_, t_), reporters in sorted(residual.items()):
+            if cid not in reporters:
+                continue
+            if cid == s_:
+                deny = f"{t_} reports {self_role(t_)}"
+                print(f"  {prefix}└╌⚠ {_yel(t_):14} "
+                      f"{_yel('residual claim →')} {_dim('(unacknowledged; ' + deny + ')')}")
+                print(f"  {prefix}    {_dim('repair: ternctl detach --downstream ' + t_ + ' --upstream ' + s_)}")
+            else:
+                print(f"  {prefix}└╌⚠ {_yel(s_):14} "
+                      f"{_yel('residual claim ←')} {_dim('(this cluster believes it is a standby of ' + s_ + ', which does not acknowledge)')}")
 
     seen = set()
 
@@ -916,9 +935,9 @@ def do_topology(args):
                 continue
             seen.add(kid)
             note = "" if kid in queried else "  " + _dim("(not queried)")
-            print(f"  {prefix}{conn}{kid:14} {_yel('STANDBY')}"
-                  f"{edge_flag(cid, kid)}{note}")
+            print(f"  {prefix}{conn}{kid:14} {_yel('STANDBY')}{note}")
             render(kid, prefix + ("    " if last else "│   "))
+        residual_lines(cid, prefix)
 
     roots = sorted([c for c in set(queried) | set(children)
                     if c not in parents and (c in children or c in reachable)])
@@ -941,37 +960,22 @@ def do_topology(args):
                   f"{_dim('(' + views[cid]['error'] + ')')}")
     print()
 
-    # Consistency: every reported edge must be confirmed by BOTH of its
-    # endpoints. A reachable cluster with no edges that no edge involves is
-    # simply not part of the topology (INDEPENDENT) — that is NOT a
-    # disagreement; only an endpoint denying an edge someone reports is.
-    # (That's exactly what a residual edge from an interrupted
-    # force-promote/teardown looks like.)
-    reachable = {cid: set(v["edges"]) for cid, v in views.items() if v["error"] is None}
-    print()
+    # Consistency summary, aligned with the residual classification above.
     if not reachable:
         warn("no reachable clusters")
         return
-    conflicts = []
-    for (s, t), reporters in sorted(all_edges.items()):
-        for endpoint in (s, t):
-            if endpoint in reachable and (s, t) not in reachable[endpoint]:
-                conflicts.append(
-                    f"{endpoint} is an endpoint of {s} → {t} (reported by "
-                    f"{', '.join(sorted(reporters))}) but does not report it")
-    if conflicts:
-        warn("clusters DISAGREE on the topology — likely a residual edge from an "
-             "interrupted force-promote/teardown (a cluster still pointing at a "
-             "now-independent peer keeps retrying it).")
-        for line in conflicts:
-            print(f"    {line}")
-        for cid, es in sorted(reachable.items()):
-            shown = ", ".join(f"{s}→{t}" for (s, t) in sorted(es)) or "independent"
-            print(f"    {_dim(cid + ': ' + shown)}")
+    if residual:
+        lines = []
+        for (s_, t_), reporters in sorted(residual.items()):
+            deniers = [c for c in (s_, t_) if c in reachable and c not in reporters]
+            lines.append(f"{s_}→{t_} (claimed by {', '.join(sorted(reporters))}; "
+                         f"unacknowledged by {', '.join(deniers)})")
+        warn(f"{len(residual)} RESIDUAL edge(s) — typically left on a live "
+             f"old primary by a force-promote, or by an interrupted topology "
+             f"change: " + "; ".join(lines))
     else:
         kv("consistency",
            "consistent — every edge is confirmed by both of its endpoints", _green)
-
 
 def do_attach(args, upstream, downstream):
     """Register the upstream→downstream replication edge WITHOUT seeding data
