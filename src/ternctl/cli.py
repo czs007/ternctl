@@ -319,12 +319,15 @@ def build_parser():
     c_rm.add_argument("name")
 
     p_replay = sub.add_parser("replay",
-                               help="reconcile a salvage dump into the NEW primary "
+                               help="reconcile a salvage dump into any WRITABLE cluster "
                                     "(fill gaps only; conflicts reported, never guessed)")
     p_replay.add_argument("--from-dir", required=True, metavar="DIR",
                           help="directory of salvage *.jsonl files (ternctl salvage --output-dir)")
     p_replay.add_argument("--into", required=True, metavar="NAME[=URI]",
-                          help="the NEW primary to recover the stranded rows into")
+                          help="ANY writable cluster to recover the stranded rows into — "
+                               "typically the new primary; a scratch cluster for "
+                               "inspection is equally valid. Standbys are refused "
+                               "(read-only).")
     p_replay.add_argument("--collections", default=None, metavar="A,B",
                           help="restrict replay to these collections")
     p_replay.add_argument("--dry-run", action="store_true",

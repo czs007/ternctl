@@ -1,4 +1,9 @@
-"""Replay — reconcile a salvage dump into the NEW primary, safely.
+"""Replay — reconcile a salvage dump into any WRITABLE cluster, safely.
+
+Typically the target is the new primary (the canonical DR flow), but an
+isolated scratch cluster is equally legitimate — load the stranded rows
+there, let the business inspect them, merge later. The only hard constraint
+is writability: a STANDBY rejects writes, so replay refuses it up front.
 
 The dump (ternctl salvage) is a SUPERSET of the lost data: the checkpoint
 records last-CONFIRMED, not last-applied, so an overlap region of already-
@@ -143,7 +148,13 @@ def fold_by_pk(raw_ops, pk_field):
 
 # ── reconcile & apply ──────────────────────────────────────────────────────
 def _pk_field(client, coll):
-    desc = client.describe_collection(coll)
+    try:
+        desc = client.describe_collection(coll)
+    except Exception as e:
+        raise RuntimeError(
+            f"collection '{coll}' is not on the target — replay does not "
+            f"create collections (the dump carries data, not schema). Create "
+            f"it first, or restore a backup into the target. ({e})") from e
     for f in desc.get("fields", []):
         if f.get("is_primary") or f.get("is_primary_key"):
             return f["name"], f.get("type")
@@ -166,9 +177,33 @@ def _existing_pks(client, coll, pk_field, pks):
 def do_replay(args, into):
     header("REPLAY",
            f"salvage dump {_cyan(args.from_dir)} → {_cyan(into.cluster_id)} ({into.uri})\n"
+           f"target may be ANY writable cluster (new primary, or a scratch "
+           f"cluster for inspection)\n"
            f"default semantics: FILL GAPS ONLY — existing keys on the target "
            f"are never touched" + (f"\n{_red('--overwrite: the dump WINS over the target')}"
                                    if getattr(args, "overwrite", False) else ""))
+    # Writability pre-flight BEFORE the (expensive) classification and any
+    # prompt: a STANDBY rejects writes — refuse it now with the way out,
+    # instead of erroring mid-upsert after a confirmation.
+    try:
+        from .commands import get_replicate_view
+        view = get_replicate_view(into,
+                                  getattr(args, "rpc_retries", None),
+                                  getattr(args, "rpc_timeout", None))
+        masters = sorted({t.source_cluster_id for t in view.cross_cluster_topology
+                          if t.target_cluster_id == into.cluster_id})
+        if masters:
+            raise RuntimeError(
+                f"{into.cluster_id} is a STANDBY (← {', '.join(masters)}) and "
+                f"rejects writes — replay into its primary, or detach it first "
+                f"(ternctl detach --downstream {into.cluster_id})")
+    except RuntimeError as e:
+        if "STANDBY" in str(e):
+            raise
+        warn(f"could not read {into.cluster_id}'s replicate view ({e}) — "
+             f"cannot verify writability; a non-writable target will fail "
+             f"clearly at write time")
+
     only = set(args.collections.split(",")) if getattr(args, "collections", None) else None
     folded, msgs, skipped = load_and_fold(args.from_dir, only)
     if skipped:
