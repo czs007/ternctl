@@ -1078,8 +1078,7 @@ def do_detach(args, upstream, downstream):
     """
     header("DETACH",
            f"primary:   {_cyan(upstream.cluster_id)}\n"
-           f"secondary: {_cyan(downstream.cluster_id)}\n"
-           f"{_yel('⚠')} DELETES this edge — use only for teardown, not as a pause")
+           f"secondary: {_cyan(downstream.cluster_id)}")
     # Remove ONLY the named edge. UpdateReplicateConfiguration is full-state
     # replacement, so the old independent-config approach wiped the primary's
     # ENTIRE topology — with multiple downstreams (a→b plus a→c), breaking
@@ -1087,6 +1086,23 @@ def do_detach(args, upstream, downstream):
     minus = merged_replicate_config_minus(upstream, downstream.cluster_id)
     remaining = [(t.source_cluster_id, t.target_cluster_id)
                  for t in minus.cross_cluster_topology]
+    # Consequence preview BEFORE the prompt — detach is destructive (a working
+    # edge is torn down) and cannot be made safe-by-construction, so it earns a
+    # confirmation. Show exactly what changes, including the LAST-edge cascade.
+    print(f"  this removes edge {_yel(upstream.cluster_id + '→' + downstream.cluster_id)}:")
+    print(f"    · {downstream.cluster_id} becomes independent")
+    if not remaining:
+        print(f"    · this is {upstream.cluster_id}'s LAST edge — "
+              f"{upstream.cluster_id} becomes independent too")
+    else:
+        print(f"    · untouched: " + ", ".join(f"{s_}→{t_}" for s_, t_ in remaining))
+    warn("NOT a pause — the source's WAL retention keeps ticking; re-attaching "
+         "later may silently lose data. To resume redundancy, use rebuild.")
+    if not getattr(args, "yes", False):
+        ans = input("  proceed with detach? [y/N]: ").strip().lower()
+        if ans not in ("y", "yes"):
+            info("aborted")
+            sys.exit(1)
     step("1/1", f"apply topology minus {upstream.cluster_id}→{downstream.cluster_id} "
                 f"on {upstream.cluster_id}")
     apply_replicate_config(upstream, minus, force_promote=False, _quiet=True); done()

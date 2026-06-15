@@ -234,6 +234,8 @@ def build_parser():
                         "you mean. (--upstream alone is deliberately NOT accepted: "
                         "detaching ALL of a primary's standbys in one go is never "
                         "implicit.)")
+    p_detach.add_argument("--yes", action="store_true",
+                          help="skip the consequence-preview confirmation")
 
     def _backup_common(p, cluster_required=True, cluster_help="the cluster (config NAME or NAME=URI)"):
         p.add_argument("--cluster", required=cluster_required, metavar="NAME[=URI]",
