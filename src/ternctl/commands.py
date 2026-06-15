@@ -203,7 +203,7 @@ def do_switchover(args, config):
     (UpdateReplicateConfiguration is full-state replacement: a bare two-
     cluster config would tear every sibling edge down; observed live)."""
     target = resolve_cluster("target", args.target, config,
-                             token=args.token, pchannel_num=getattr(args, "pchannel_num", None))
+                             token=getattr(args, "token", None), pchannel_num=getattr(args, "pchannel_num", None))
     tview = get_replicate_view(target,
                                getattr(args, "rpc_retries", None),
                                getattr(args, "rpc_timeout", None))
@@ -232,7 +232,7 @@ def do_switchover(args, config):
             f"discovered current primary '{up_cid}' is not in the config file — "
             f"add it first: ternctl config add {up_cid} --uri ...")
     upstream = resolve_cluster("upstream", up_cid, config,
-                               token=args.token, pchannel_num=getattr(args, "pchannel_num", None))
+                               token=getattr(args, "token", None), pchannel_num=getattr(args, "pchannel_num", None))
 
     # Old primary's FULL topology, re-rooted at the target: every sibling
     # standby keeps replicating, now from the new primary (the CDC fence
@@ -250,7 +250,7 @@ def do_switchover(args, config):
             f"their cluster defs must be rebuilt locally (the live view redacts "
             f"tokens). Add them first: ternctl config add <name> --uri ...")
     cluster_defs = [target.milvus_cluster(), upstream.milvus_cluster()] + [
-        resolve_cluster("peer", c, config, token=args.token,
+        resolve_cluster("peer", c, config, token=getattr(args, "token", None),
                         pchannel_num=getattr(args, "pchannel_num", None)).milvus_cluster()
         for c in siblings]
     edges = [(target.cluster_id, upstream.cluster_id)] + [
@@ -636,7 +636,7 @@ def discover_downstreams(args, upstream, config):
                  f"Add it: ternctl config add {tcid} --uri http://...:19530")
             continue
         out.append(resolve_cluster("downstream", tcid, config,
-                                   token=args.token,
+                                   token=getattr(args, "token", None),
                                    pchannel_num=getattr(args, "pchannel_num", None)))
     return targets, out
 
@@ -667,7 +667,7 @@ def for_each_downstream(args, upstream, config, fn):
             all_ok = False
             continue
         downstream = resolve_cluster("downstream", tcid, config,
-                                     token=args.token,
+                                     token=getattr(args, "token", None),
                                      pchannel_num=getattr(args, "pchannel_num", None))
         result = fn(args, upstream, downstream)
         all_ok = all_ok and (result is None or bool(result))
@@ -813,7 +813,7 @@ def do_topology(args):
                   f"`ternctl config add`", file=sys.stderr)
             sys.exit(2)
     resolved = [resolve_cluster("query", c, config, pchannel_num=getattr(args, "pchannel_num", None),
-                                token=args.token) for c in cluster_specs]
+                                token=getattr(args, "token", None)) for c in cluster_specs]
     specs = [(cl.cluster_id, cl.dial_addr) for cl in resolved]
 
     header("TOPOLOGY",
@@ -1047,7 +1047,7 @@ def discover_upstream(args, downstream, config):
             f"add it (ternctl config add {cid} --uri ...) or pass --upstream inline")
     info(f"upstream auto-discovered from {downstream.cluster_id}'s replicate "
          f"config: {cid}")
-    return resolve_cluster("upstream", cid, config, token=args.token,
+    return resolve_cluster("upstream", cid, config, token=getattr(args, "token", None),
                            pchannel_num=getattr(args, "pchannel_num", None))
 
 

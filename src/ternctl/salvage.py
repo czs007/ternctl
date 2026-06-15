@@ -232,6 +232,9 @@ def do_salvage(args):
             args.kafka_brokers = entry.get("kafka_brokers")
         if not args.source_cluster_id:
             args.source_cluster_id = args.source_cluster
+    # token only used on the live-lookup fallback path; take it from the
+    # source cluster's config entry, default root:Milvus.
+    salvage_token = (entry.get("token") if entry else None) or "root:Milvus"
     if not args.kafka_brokers:
         raise RuntimeError(
             "--kafka-brokers is required (or set kafka_brokers on the "
@@ -317,7 +320,7 @@ def _salvage_one(args):
             cp_offset, cp_tt = get_salvage_checkpoint(args.new_primary_uri,
                                                       args.source_cluster_id,
                                                       args.source_pchannel,
-                                                      args.token)
+                                                      salvage_token)
             if cp_offset is None:
                 warn("no salvage checkpoint present on the new primary — fallback to topic earliest")
                 start_offset = 0

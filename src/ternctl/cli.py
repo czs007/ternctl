@@ -37,7 +37,6 @@ def add_common(p, downstream_required=True, upstream_required=True):
                    help="override the upstream's inter-cluster URI")
     g.add_argument("--downstream-inter", default=None, metavar="URI",
                    help="override the downstream's inter-cluster URI")
-    g.add_argument("--token", default=None, help="override auth token")
 
 
 def add_rpc_opts(p):
@@ -107,10 +106,10 @@ def fill_backup_args(args, config, up_cid=None, down_cid=None):
 def clusters_from_args(args):
     config = load_config(getattr(args, "config", None))
     upstream = resolve_cluster("upstream", args.upstream, config,
-                               inter=args.upstream_inter, token=args.token,
+                               inter=args.upstream_inter, token=getattr(args, "token", None),
                                pchannel_num=getattr(args, "pchannel_num", None))
     downstream = resolve_cluster("downstream", args.downstream, config,
-                                 inter=args.downstream_inter, token=args.token,
+                                 inter=args.downstream_inter, token=getattr(args, "token", None),
                                  pchannel_num=getattr(args, "pchannel_num", None))
     return upstream, downstream
 
@@ -140,7 +139,6 @@ def build_parser():
     g.add_argument("--target", required=True, metavar="NAME[=URI]",
                    help="the standby that should END UP primary; its current "
                         "primary is auto-discovered from its own replicate config")
-    g.add_argument("--token", default=None)
     add_rpc_opts(p_switch)
 
     p_force = sub.add_parser("force-promote", help="promote secondary to independent primary (original primary down)")
@@ -149,7 +147,6 @@ def build_parser():
                    help="the secondary being promoted: a config name, or NAME=URI inline")
     g.add_argument("--target-inter", default=None, metavar="URI",
                    help="override the target's inter-cluster URI")
-    g.add_argument("--token", default=None)
     p_force.add_argument("--yes", action="store_true", help="skip the RPO confirmation prompt")
     sg = p_force.add_argument_group("salvage checkpoint prefetch (recommended for DR)")
     sg.add_argument("--salvage-from", default=None,
@@ -191,7 +188,6 @@ def build_parser():
                         help="cluster names from the config file, separated by "
                              "commas and/or spaces (shorthand for repeating "
                              "--cluster). 'a,b,c', 'a, b, c' and 'a b c' all work.")
-    p_topo.add_argument("--token", default=None)
     add_rpc_opts(p_topo)
 
     p_verify = sub.add_parser("verify", help="compare row counts")
@@ -238,7 +234,6 @@ def build_parser():
                         "you mean. (--upstream alone is deliberately NOT accepted: "
                         "detaching ALL of a primary's standbys in one go is never "
                         "implicit.)")
-    g.add_argument("--token", default=None)
 
     def _backup_common(p, cluster_required=True, cluster_help="the cluster (config NAME or NAME=URI)"):
         p.add_argument("--cluster", required=cluster_required, metavar="NAME[=URI]",
@@ -337,7 +332,6 @@ def build_parser():
                                "are overwritten / deleted per the dump. Only when you KNOW "
                                "no post-failover write touched these keys.")
     p_replay.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
-    p_replay.add_argument("--token", default=None)
 
     p_salvage = sub.add_parser("salvage",
                                help="recover WAL messages from Kafka using a salvage checkpoint")
@@ -376,8 +370,6 @@ def build_parser():
                            help="cap on messages to dump (default: 100,000)")
     p_salvage.add_argument("--timeout-seconds", type=int, default=10,
                            help="stop after this many idle seconds (default: 10)")
-    p_salvage.add_argument("--token", default="root:Milvus",
-                           help="milvus auth token for the live checkpoint lookup")
     p_salvage.add_argument("--kafka-sasl-mechanism", default=None,
                            help="PLAIN / SCRAM-SHA-256 / SCRAM-SHA-512")
     p_salvage.add_argument("--kafka-sasl-user", default=None)
@@ -401,7 +393,7 @@ def run_command(args, parser):
         if args.command == "force-promote":
             config = load_config(getattr(args, "config", None))
             target = resolve_cluster("target", args.target, config,
-                                     inter=args.target_inter, token=args.token,
+                                     inter=args.target_inter, token=getattr(args, "token", None),
                                      pchannel_num=getattr(args, "pchannel_num", None))
             do_force_promote(args, target)
             return
@@ -420,7 +412,7 @@ def run_command(args, parser):
 
         if args.command == "replay":
             config = load_config(getattr(args, "config", None))
-            into = resolve_cluster("into", args.into, config, token=args.token)
+            into = resolve_cluster("into", args.into, config, token=getattr(args, "token", None))
             do_replay(args, into)
             return
 
@@ -446,10 +438,10 @@ def run_command(args, parser):
         if args.command == "detach":
             config = load_config(getattr(args, "config", None))
             downstream = resolve_cluster("downstream", args.downstream, config,
-                                         token=args.token, pchannel_num=getattr(args, "pchannel_num", None))
+                                         token=getattr(args, "token", None), pchannel_num=getattr(args, "pchannel_num", None))
             if args.upstream:
                 upstream = resolve_cluster("upstream", args.upstream, config,
-                                           token=args.token, pchannel_num=getattr(args, "pchannel_num", None))
+                                           token=getattr(args, "token", None), pchannel_num=getattr(args, "pchannel_num", None))
             else:
                 upstream = discover_upstream(args, downstream, config)
             do_detach(args, upstream, downstream)
@@ -460,7 +452,7 @@ def run_command(args, parser):
             fn = do_status if args.command == "status" else verify
             if args.upstream:
                 upstream = resolve_cluster("upstream", args.upstream, config,
-                                           inter=args.upstream_inter, token=args.token,
+                                           inter=args.upstream_inter, token=getattr(args, "token", None),
                                            pchannel_num=getattr(args, "pchannel_num", None))
                 if args.command == "verify":
                     ids, downstreams = discover_downstreams(args, upstream, config)
@@ -476,7 +468,7 @@ def run_command(args, parser):
                     ok = for_each_downstream(args, upstream, config, fn)
             elif args.downstream:
                 downstream = resolve_cluster("downstream", args.downstream, config,
-                                             inter=args.downstream_inter, token=args.token,
+                                             inter=args.downstream_inter, token=getattr(args, "token", None),
                                              pchannel_num=getattr(args, "pchannel_num", None))
                 upstream = discover_upstream(args, downstream, config)
                 r = fn(args, upstream, downstream)
