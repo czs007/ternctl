@@ -1012,18 +1012,19 @@ def do_topology(args):
         first = False
         seen.add(r)
         kids = children.get(r, [])
-        # A root with no CONFIRMED edges may still REPORT a residual edge it's
-        # an endpoint of (its own view holds an unacknowledged edge). Saying
-        # "(no replication edges)" then contradicts the residual line printed
-        # below it. The condition mirrors residual_lines exactly (endpoint AND
-        # reporter) so the DENIER of a residual edge — which is genuinely
-        # edge-less — is NOT mislabeled.
-        res_claim = any(r in reporters and r in (s_, t_)
-                        for (s_, t_), reporters in residual.items())
+        # Role from CONFIRMED edges; but a cluster whose OWN view holds only a
+        # residual edge isn't INDEPENDENT — it self-declares a role the peer
+        # denies. Label it PRIMARY?/STANDBY? (claimed, unconfirmed) so it never
+        # contradicts the residual line below. The DENIER (endpoint that does
+        # NOT report the edge) is genuinely edge-less → stays INDEPENDENT.
+        res_out = any(s_ == r and r in rep for (s_, t_), rep in residual.items())
+        res_in  = any(t_ == r and r in rep for (s_, t_), rep in residual.items())
         if kids:
             role, extra = _green("PRIMARY"), ""
-        elif res_claim:
-            role, extra = _dim("INDEPENDENT"), "  " + _dim("(no confirmed edges; unacknowledged claim below)")
+        elif res_out:
+            role, extra = _yel("PRIMARY?"), "  " + _dim("(self-declared; downstream denies it — see below)")
+        elif res_in:
+            role, extra = _yel("STANDBY?"), "  " + _dim("(self-declared; upstream denies it — see below)")
         else:
             role, extra = _dim("INDEPENDENT"), "  " + _dim("(no replication edges)")
         note = "" if r in queried else "  " + _dim("(not queried)")
