@@ -91,6 +91,28 @@ def _overlapping_nonempty(upstream, downstream):
     return out
 
 
+def _target_missing_source_data(source, target):
+    """Source collections (with data) that the TARGET lacks or holds fewer rows
+    of. attach starts CDC from NOW — pre-existing data lives in sealed segments
+    in object storage, NOT in the WAL, so CDC can never backfill it. Attaching
+    over such a gap yields a permanently-behind standby (or one missing whole
+    collections). Returns [(name, source_rows, target_rows|None)]."""
+    sc, tc = _milvus_client(source), _milvus_client(target)
+    tgt = set(tc.list_collections())
+    gaps = []
+    for name in sc.list_collections():
+        s_rows = int(sc.get_collection_stats(name).get("row_count", 0))
+        if s_rows == 0:
+            continue  # empty source collection — no baseline to seed
+        if name not in tgt:
+            gaps.append((name, s_rows, None))
+        else:
+            t_rows = int(tc.get_collection_stats(name).get("row_count", 0))
+            if t_rows < s_rows:
+                gaps.append((name, s_rows, t_rows))
+    return gaps
+
+
 def merged_replicate_config_minus(upstream, exclude_id):
     """The upstream's current topology with ONLY the upstream→exclude_id edge
     removed — other downstream edges survive. Cluster defs are kept only for
@@ -1023,6 +1045,25 @@ def do_attach(args, upstream, downstream):
     --replace is the surgery channel: send exactly this single-edge config,
     removals included (poisoned/divergent state repair)."""
     source, target = upstream, downstream
+    # Data-baseline guard (default path; --replace surgery bypasses it):
+    # attach without seeding is valid only when the target already mirrors the
+    # source's existing data (fresh empty pair, or re-attach onto a baseline).
+    # If the source holds data the target lacks, CDC-from-now can't backfill it.
+    if not getattr(args, "replace", False):
+        gaps = _target_missing_source_data(upstream, downstream)
+        if gaps:
+            listed = ", ".join(
+                f"{n} (source {sr} rows, target {'absent' if tr is None else str(tr) + ' rows'})"
+                for n, sr, tr in gaps)
+            raise RuntimeError(
+                f"{downstream.cluster_id} is missing data that "
+                f"{upstream.cluster_id} already holds: {listed}. attach only "
+                f"starts CDC from now — pre-existing data (sealed segments) is "
+                f"not in the WAL and won't replicate, leaving a permanently-"
+                f"behind standby. Seed the baseline first: ternctl rebuild "
+                f"--upstream {upstream.cluster_id} --downstream {downstream.cluster_id}. "
+                f"(If you just detached and WAL retention still covers the gap, "
+                f"rebuild is still the safe choice.)")
     if getattr(args, "replace", False):
         config = build_replicate_config(upstream, downstream,
                                         source=source, target=target)

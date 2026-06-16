@@ -22,7 +22,11 @@ def row_counts(cluster, names):
     c = _client(cluster)
     counts = {}
     try:
+        present = set(c.list_collections())
         for name in names:
+            if name not in present:
+                counts[name] = "absent"   # avoid get_collection_stats' noisy RPC-error log
+                continue
             try:
                 counts[name] = c.get_collection_stats(name)["row_count"]
             except Exception as exc:
