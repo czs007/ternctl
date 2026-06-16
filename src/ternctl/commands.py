@@ -970,9 +970,13 @@ def do_topology(args):
         return "INDEPENDENT"
 
     def residual_lines(cid, prefix):
-        """Dashed warning lines for every residual claim this cluster makes."""
+        """Dashed warning lines for residual edges this cluster is an ENDPOINT
+        of. A sibling that merely CARRIES the edge in its full-topology config
+        (e.g. a healthy standby that knows about its siblings) also reports it,
+        but is making no claim about ITSELF — skip those, or they'd look like a
+        bogus role conflict."""
         for (s_, t_), reporters in sorted(residual.items()):
-            if cid not in reporters:
+            if cid not in reporters or cid not in (s_, t_):
                 continue
             if cid == s_:
                 deny = f"{t_} reports {self_role(t_)}"
@@ -1028,8 +1032,7 @@ def do_topology(args):
         lines = []
         for (s_, t_), reporters in sorted(residual.items()):
             deniers = [c for c in (s_, t_) if c in reachable and c not in reporters]
-            lines.append(f"{s_}→{t_} (claimed by {', '.join(sorted(reporters))}; "
-                         f"unacknowledged by {', '.join(deniers)})")
+            lines.append(f"{s_}→{t_} (unacknowledged by {', '.join(deniers)})")
         warn(f"{len(residual)} RESIDUAL edge(s) — typically left on a live "
              f"old primary by a force-promote, or by an interrupted topology "
              f"change: " + "; ".join(lines))
