@@ -399,6 +399,17 @@ def do_force_promote(args, target):
         if ans != "force-promote":
             info("aborted")
             sys.exit(1)
+    # Salvage source can never be the cluster being promoted: you recover the
+    # STRANDED tail from the OLD (dead) primary's WAL — a DIFFERENT cluster.
+    # source == target asks "what's cluster-X's checkpoint for messages from
+    # cluster-X?", which is meaningless and snapshots all-empty (observed: a
+    # checkpoint_01 with source=target=cluster-a, 0/16 usable).
+    if args.checkpoint_source and args.checkpoint_source == target.cluster_id:
+        raise RuntimeError(
+            f"--checkpoint-source {args.checkpoint_source} is the SAME cluster "
+            f"being promoted — salvage recovers the OLD PRIMARY's stranded WAL, "
+            f"which must be a DIFFERENT cluster. Pass the dead primary's id, or "
+            f"--no-checkpoint if there is nothing to salvage.")
     do_prefetch = bool(args.checkpoint_source)
     subtitle = (
         f"target: {_cyan(target.cluster_id)} ({target.uri})\n"
