@@ -390,6 +390,27 @@ def _salvage_one(args):
 
     tp = TopicPartition(args.source_pchannel, 0)
     consumer.assign([tp])
+    # Stale-checkpoint detection: if the start offset falls outside the topic's
+    # current [earliest, high-water) range, the WAL it refers to is gone — a
+    # cluster reinstall recreates the topic from offset 0, and retention purges
+    # the oldest messages. Either way an empty dump would otherwise look like
+    # "nothing was stranded" when really the checkpoint no longer applies.
+    try:
+        hw = consumer.end_offsets([tp])[tp]
+        earliest = consumer.beginning_offsets([tp])[tp]
+        if start_offset > hw:
+            warn(f"checkpoint start offset {start_offset} is BEYOND this topic's "
+                 f"end offset {hw} — the WAL was reset (cluster reinstall) or fully "
+                 f"purged since the checkpoint was captured. This checkpoint is "
+                 f"STALE; an empty result below means 'no longer applicable', not "
+                 f"'nothing stranded'.")
+        elif start_offset < earliest:
+            warn(f"checkpoint start offset {start_offset} is below the earliest "
+                 f"retained offset {earliest} — WAL retention purged the messages "
+                 f"at the checkpoint; salvaging from {earliest}, the dump may miss "
+                 f"the oldest stranded messages.")
+    except Exception:
+        pass  # diagnostic only — never let it break salvage
     consumer.seek(tp, start_offset)
     print()
 
