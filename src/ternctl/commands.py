@@ -1012,8 +1012,20 @@ def do_topology(args):
         first = False
         seen.add(r)
         kids = children.get(r, [])
-        role = _green("PRIMARY") if kids else _dim("INDEPENDENT")
-        extra = "" if kids else "  " + _dim("(no replication edges)")
+        # A root with no CONFIRMED edges may still REPORT a residual edge it's
+        # an endpoint of (its own view holds an unacknowledged edge). Saying
+        # "(no replication edges)" then contradicts the residual line printed
+        # below it. The condition mirrors residual_lines exactly (endpoint AND
+        # reporter) so the DENIER of a residual edge — which is genuinely
+        # edge-less — is NOT mislabeled.
+        res_claim = any(r in reporters and r in (s_, t_)
+                        for (s_, t_), reporters in residual.items())
+        if kids:
+            role, extra = _green("PRIMARY"), ""
+        elif res_claim:
+            role, extra = _dim("INDEPENDENT"), "  " + _dim("(no confirmed edges; unacknowledged claim below)")
+        else:
+            role, extra = _dim("INDEPENDENT"), "  " + _dim("(no replication edges)")
         note = "" if r in queried else "  " + _dim("(not queried)")
         print(f"  {_green('●')} {r:14} {role}{extra}{note}")
         render(r, "")
