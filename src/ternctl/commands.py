@@ -271,16 +271,48 @@ def do_switchover(args, config):
     if siblings:
         info("carrying sibling standby(s) to the new primary: "
              + ", ".join(siblings))
-    step("1/2", f"apply re-rooted topology to {upstream.cluster_id}")
+    nsteps = "3" if siblings else "2"
+    step(f"1/{nsteps}", f"apply re-rooted topology to {upstream.cluster_id}")
     apply_replicate_config(upstream, new_config, _quiet=True); done()
-    step("2/2", f"apply re-rooted topology to {target.cluster_id}")
+    step(f"2/{nsteps}", f"apply re-rooted topology to {target.cluster_id}")
     apply_replicate_config(target, new_config, _quiet=True); done()
+
+    # Verify the SIBLINGS rewired. old-primary and new-primary were applied
+    # directly (confirmed); the siblings are rewired by the fence broadcast.
+    # In a graceful switchover the old primary is alive and coordinates the
+    # fence, so this normally succeeds — but if a sibling's fence didn't land
+    # it is left consuming the OLD primary's WAL (a residual). We don't
+    # auto-repair: rewiring a stuck standby to a new primary can need a fresh
+    # snapshot (CDC docs: force/uncoordinated standbys must be rebuilt), so we
+    # detect and point at rebuild rather than guessing.
+    not_rewired = []
+    if siblings:
+        step(f"3/{nsteps}", f"confirm {len(siblings)} sibling(s) rewired to {target.cluster_id}")
+        for sib in siblings:
+            sc = resolve_cluster("sibling", sib, config,
+                                 token=getattr(args, "token", None))
+            try:
+                sv = get_replicate_view(sc, getattr(args, "rpc_retries", None),
+                                        getattr(args, "rpc_timeout", None))
+                src = {t.source_cluster_id for t in sv.cross_cluster_topology
+                       if t.target_cluster_id == sib}
+                if src != {target.cluster_id}:
+                    not_rewired.append(sib)
+            except RuntimeError:
+                not_rewired.append(sib)
+        done(extra=("all rewired" if not not_rewired
+                    else f"{len(not_rewired)} did NOT rewire"))
+
     header("DONE")
     kv("new primary", f"{target.cluster_id} ({target.uri})", _green)
     kv("now standby", f"{upstream.cluster_id} ({upstream.uri})", _dim)
     if siblings:
         kv("still standby", ", ".join(f"{c} (now ← {target.cluster_id})"
-                                      for c in siblings), _dim)
+                                      for c in siblings if c not in not_rewired), _dim)
+    for sib in not_rewired:
+        warn(f"{sib} did NOT rewire to {target.cluster_id} — its fence broadcast "
+             f"did not land; it is stranded on the old primary. Rebuild it: "
+             f"ternctl rebuild --upstream {target.cluster_id} --downstream {sib}")
     info("point application writes at the new primary; old primary now receives via CDC")
 
 def do_force_promote(args, target):
@@ -328,9 +360,14 @@ def do_force_promote(args, target):
                  f"replicate config: {_cyan(sources[0])} "
                  f"(pass --no-salvage to skip the prefetch)")
         elif len(sources) > 1:
-            warn(f"{target.cluster_id} has {len(sources)} incoming edges "
-                 f"({', '.join(sources)}) — cannot pick a salvage source "
-                 f"automatically, pass --salvage-from")
+            raise RuntimeError(
+                f"{target.cluster_id} has {len(sources)} incoming edges "
+                f"({', '.join(sources)}) — a pathological state, cannot pick a "
+                f"salvage source automatically. Choose explicitly: "
+                f"--salvage-from <{'|'.join(sources)}> to capture one, or "
+                f"--no-salvage to promote WITHOUT salvaging (in-flight data on "
+                f"the old primaries becomes unrecoverable). Refusing to skip "
+                f"salvage silently.")
     if not getattr(args, "yes", False):
         ans = input(
             f"\nFORCE-PROMOTE will make '{target.cluster_id}' an independent primary.\n"
@@ -411,10 +448,11 @@ def do_force_promote(args, target):
     kv("new primary", f"{target.cluster_id} ({target.uri})  [INDEPENDENT — no standby]", _green)
     if salvage_out_path:
         kv("salvage snapshot", salvage_out_path, _bold)
-        info(f"to recover from {args.salvage_from}'s WAL, feed it into:")
-        info(f"  {_bold('ternctl salvage --checkpoint-file ' + salvage_out_path + ' --source-pchannel <topic> --kafka-brokers <hosts> --output salvage.jsonl')}")
+        info(f"recover {args.salvage_from}'s stranded WAL tail, then reconcile it in:")
+        info(f"  {_bold('ternctl salvage --source-cluster ' + args.salvage_from + ' --checkpoint-file ' + os.path.basename(salvage_out_path) + ' --output-dir ./salvage_out')}")
+        info(f"  {_bold('ternctl replay --from-dir ./salvage_out --into ' + target.cluster_id)}")
     info(f"next: when the old primary recovers, run "
-         f"{_bold('ternctl rebuild --upstream <new> --downstream <old>')} to re-establish a standby")
+         f"{_bold('ternctl rebuild --upstream ' + target.cluster_id + ' --downstream <old>')} to re-establish a standby")
 
 
 def do_status(args, upstream, downstream):
@@ -1055,17 +1093,18 @@ def do_detach(args, upstream, downstream):
     """Remove ONE replication edge (upstream→downstream), leaving the
     upstream's other downstream edges intact.
 
-    Mechanism (verified end-to-end against milvus v2.6.18):
-    - Apply the upstream's current topology MINUS this edge on the upstream
-      (full-state replacement API — see merged_replicate_config_minus). With
-      no edges left this is the independent config (`clusters=[primary]`,
+    Mechanism (two steps — the broadcast cannot be trusted for teardown):
+    - Step 1: apply the upstream's current topology MINUS this edge on the
+      upstream (full-state replacement — see merged_replicate_config_minus).
+      With no edges left this is the independent config (`clusters=[primary]`,
       `topology=[]`), which milvus accepts: a primary may clear its outbound
       edge by becoming independent.
-    - The change BROADCASTS along the existing streams; the removed secondary
-      automatically transitions to independent primary — no second call needed.
-    - Calling `force_promote=True` on the old secondary AFTER step 1 is
-      rejected with "current cluster is primary" — because by then it
-      already IS independent primary.
+    - Step 2: VERIFY the downstream released the edge. Milvus broadcasts the
+      change along the live CDC stream, but a residual/broken edge (detach's
+      teardown use case) can have a dead stream so the broadcast never
+      arrives. If the downstream still claims the edge, reset it directly with
+      `force_promote=True` — empirically the ONLY accepted path for a stuck
+      standby with no live primary (a plain independent config is rejected).
 
     Note: `clusters=[A,B], topology=[]` (keeping both cluster defs) is
     rejected by the validator ("primary count is not 1"). The independent

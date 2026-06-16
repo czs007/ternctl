@@ -4,6 +4,8 @@ import re
 import sys
 import time
 
+import grpc
+
 from . import output
 from .output import log, info, warn, _red, _cyan, _bold, _dim
 from .config import load_config, load_defaults, resolve_cluster
@@ -497,8 +499,28 @@ def run_command(args, parser):
         elif args.command == "attach":
             do_attach(args, upstream, downstream)
 
-    except RuntimeError as exc:
-        log(f"ERROR: {exc}")
+    except (RuntimeError, grpc.RpcError) as exc:
+        # apply_replicate_config's stub call can raise grpc.RpcError directly
+        # (network / deadline / server error) — not a RuntimeError, so it would
+        # otherwise escape as an uncaught traceback. Format it cleanly here.
+        if isinstance(exc, grpc.RpcError):
+            code = exc.code().name if (hasattr(exc, "code") and exc.code()) else "RPC_ERROR"
+            detail = (exc.details() if hasattr(exc, "details") and exc.details()
+                      else str(exc))
+            log(f"ERROR: {code}: {detail}")
+        else:
+            log(f"ERROR: {exc}")
+        # A failure that happened DURING an apply (gRPC error, or a server
+        # rejection naming the RPC) can leave a two-step topology change
+        # half-applied. Validation refusals (dirty target, wrong direction …)
+        # raise before any apply and must NOT trigger this hint.
+        apply_failed = (isinstance(exc, grpc.RpcError)
+                        or "UpdateReplicateConfiguration" in str(exc))
+        if apply_failed and args.command in (
+                "rebuild", "switchover", "attach", "detach", "force-promote"):
+            log("an apply failed mid-operation — the topology may be HALF-APPLIED. "
+                "Run `ternctl topology` to inspect (residual edges are flagged), "
+                "then repair with detach / attach / rebuild.")
         sys.exit(1)
 
 
