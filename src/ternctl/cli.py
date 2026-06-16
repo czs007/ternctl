@@ -7,7 +7,7 @@ import time
 import grpc
 
 from . import output
-from .output import log, info, warn, _red, _cyan, _bold, _dim
+from .output import log, info, warn, _red, _yel, _cyan, _bold, _dim
 from .config import load_config, load_defaults, resolve_cluster
 from .verify import verify, verify_many
 from .commands import (do_rebuild, do_switchover, do_force_promote, do_status,
@@ -629,6 +629,21 @@ def _make_completer(parser):
     return complete
 
 
+def _ternctl_src_mtime():
+    """Newest mtime across the ternctl package .py files — to detect a repl
+    running stale code after an on-disk edit."""
+    import os
+    pkg = os.path.dirname(__file__)
+    newest = 0.0
+    try:
+        for f in os.listdir(pkg):
+            if f.endswith(".py"):
+                newest = max(newest, os.path.getmtime(os.path.join(pkg, f)))
+    except OSError:
+        pass
+    return newest
+
+
 def run_repl(parser):
     """Interactive shell: run subcommands without re-typing the launcher each time.
     Uses stdlib only — readline (if present) gives history + line editing +
@@ -648,8 +663,18 @@ def run_repl(parser):
     print(f"\n{_bold(_cyan('ternctl interactive shell'))}")
     print(_dim("  run subcommands directly (status, topology, rebuild, config list, ...)"))
     print(_dim("  TAB completes commands, flags and cluster names · 'help' lists commands · 'exit' or Ctrl-D quits\n"))
+    src_mtime = _ternctl_src_mtime()
+    warned_stale = False
     while True:
         output._spinner_end()  # belt-and-braces: never let a dangling spinner draw over the prompt
+        # A long-lived repl keeps the code it started with. If the package was
+        # edited on disk (a `git pull`, a local fix), warn once — running stale
+        # code silently is the single most confusing thing about a repl.
+        if not warned_stale and _ternctl_src_mtime() > src_mtime:
+            print(_yel("  ⚠ ternctl source changed on disk — this shell is still "
+                       "running the OLD code. Restart it (exit; ternctl repl) to pick "
+                       "up the change."))
+            warned_stale = True
         try:
             line = input("ternctl> ").strip()
         except EOFError:

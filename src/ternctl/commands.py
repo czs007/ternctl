@@ -1028,7 +1028,8 @@ def do_topology(args):
         else:
             role, extra = _dim("INDEPENDENT"), "  " + _dim("(no replication edges)")
         note = "" if r in queried else "  " + _dim("(not queried)")
-        print(f"  {_green('●')} {r:14} {role}{extra}{note}")
+        marker = _yel("●") if (res_out or res_in) else _green("●")
+        print(f"  {marker} {r:14} {role}{extra}{note}")
         render(r, "")
     for cid in queried:
         if views[cid]["error"] and cid not in parents and cid not in children:
