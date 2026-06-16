@@ -1103,12 +1103,48 @@ def do_detach(args, upstream, downstream):
         if ans not in ("y", "yes"):
             info("aborted")
             sys.exit(1)
-    step("1/1", f"apply topology minus {upstream.cluster_id}→{downstream.cluster_id} "
+    step("1/2", f"apply topology minus {upstream.cluster_id}→{downstream.cluster_id} "
                 f"on {upstream.cluster_id}")
     apply_replicate_config(upstream, minus, force_promote=False, _quiet=True); done()
+
+    # Verify-and-repair the DOWNSTREAM. detach historically relied on the
+    # AlterReplicateConfig broadcast reaching the downstream via the live CDC
+    # stream — but a residual/broken edge (exactly detach's teardown case) can
+    # have a dead stream, so the broadcast never arrives and the downstream
+    # stays stuck claiming the now-removed edge. Confirm it released; if not,
+    # reset it directly (force_promote=True is the ONLY accepted path for a
+    # stuck standby with no live primary feeding it).
+    step("2/2", f"confirm {downstream.cluster_id} released the edge")
+    edge = (upstream.cluster_id, downstream.cluster_id)
+    released = False
+    for _ in range(3):
+        try:
+            dv = get_replicate_view(downstream,
+                                    getattr(args, "rpc_retries", None),
+                                    getattr(args, "rpc_timeout", None))
+            still = any((t.source_cluster_id, t.target_cluster_id) == edge
+                        for t in dv.cross_cluster_topology)
+            if not still:
+                released = True
+                break
+        except RuntimeError:
+            released = True  # view unreadable == already independent (#50344)
+            break
+        time.sleep(2)
+    if released:
+        done(extra="released via broadcast")
+        broadcast_ok = True
+    else:
+        apply_replicate_config(downstream, independent_replicate_config(downstream),
+                               force_promote=True, _quiet=True)
+        done(extra="broadcast did not reach it — reset directly")
+        broadcast_ok = False
+
     header("DONE")
     info(f"edge {upstream.cluster_id} → {downstream.cluster_id} removed; "
-         f"{downstream.cluster_id} auto-transitions to independent (broadcast)")
+         f"{downstream.cluster_id} is independent"
+         + ("" if broadcast_ok else " (force-reset — the broadcast had no live "
+            "stream to travel, typical of a residual edge)"))
     if remaining:
         info("untouched edges: " + ", ".join(f"{s}→{t}" for s, t in remaining))
     else:
