@@ -979,13 +979,13 @@ def do_topology(args):
             if cid not in reporters or cid not in (s_, t_):
                 continue
             if cid == s_:
-                deny = f"{t_} reports {self_role(t_)}"
-                print(f"  {prefix}└╌⚠ {_yel(t_):14} "
-                      f"{_yel('residual claim →')} {_dim('(unacknowledged; ' + deny + ')')}")
+                # cid is the SOURCE: it claims an outgoing edge the target denies.
+                print(f"  {prefix}└╌⚠ {_yel(s_ + '→' + t_)}  {_dim('— ' + s_ + ' claims this edge; ' + t_ + ' denies it (reports ' + self_role(t_) + ')')}")
                 print(f"  {prefix}    {_dim('repair: ternctl detach --downstream ' + t_ + ' --upstream ' + s_)}")
             else:
-                print(f"  {prefix}└╌⚠ {_yel(s_):14} "
-                      f"{_yel('residual claim ←')} {_dim('(this cluster believes it is a standby of ' + s_ + ', which does not acknowledge)')}")
+                # cid is the TARGET: it believes it's a standby of a source that denies.
+                print(f"  {prefix}└╌⚠ {_yel(s_ + '→' + t_)}  {_dim('— ' + t_ + ' believes it replicates from ' + s_ + '; ' + s_ + ' denies it')}")
+                print(f"  {prefix}    {_dim('repair: ternctl detach --downstream ' + t_ + ' --upstream ' + s_)}")
 
     seen = set()
 
