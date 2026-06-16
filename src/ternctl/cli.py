@@ -290,6 +290,12 @@ def build_parser():
     p_clusters.add_argument("--probe", action="store_true",
                             help="also probe each cluster's uri for gRPC reachability "
                                  "(transport-level, ~2s timeout per cluster)")
+    p_clusters.add_argument("--rows", action="store_true",
+                            help="also list each cluster's collections and their row "
+                                 "counts (connects to each uri; implies reachability)")
+    p_clusters.add_argument("--collections", default=None,
+                            help="with --rows, restrict to these comma-separated "
+                                 "collection names instead of every collection")
 
     p_config = sub.add_parser("config", help="manage the cluster config file (~/.ternctl.yaml)")
     csub = p_config.add_subparsers(dest="config_command", required=True)

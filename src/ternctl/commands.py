@@ -18,7 +18,7 @@ from .replication import (build_replicate_config, apply_replicate_config,
 from .backup import (backup_create, restore_secondary, restore_backup,
                      backup_list_names, backup_get_info, run_backup_capture,
                      backup_source_cluster)
-from .verify import verify
+from .verify import verify, row_counts, list_collections
 
 
 # --------------------------------------------------------------------------- #
@@ -594,6 +594,9 @@ def do_clusters(args):
              + _bold("ternctl config add <name> --uri http://...:19530"))
         return
     probe = getattr(args, "probe", False)
+    rows = getattr(args, "rows", False)
+    only = (getattr(args, "collections", None) or "").split(",") if getattr(args, "collections", None) else None
+    only = [c.strip() for c in only if c.strip()] if only else None
     for name in sorted(cfg):
         e = cfg[name]
         line = _cluster_line(name, e)
@@ -603,8 +606,23 @@ def do_clusters(args):
             ms = (time.time() - t0) * 1000
             line += "  " + (_green(f"✓ up {ms:.0f}ms") if ok else _red("✗ unreachable"))
         print(line)
-    if not probe:
-        info("add " + _bold("--probe") + " to check gRPC reachability of each uri")
+        if rows:
+            try:
+                cl = resolve_cluster("cluster", name, cfg)
+                names = only if only is not None else sorted(list_collections(cl))
+                if not names:
+                    print("    " + _dim("(no collections)"))
+                else:
+                    counts = row_counts(cl, names)
+                    for cn in names:
+                        v = counts.get(cn, "absent")
+                        shown = _dim(str(v)) if v == "absent" else _cyan(str(v))
+                        print(f"    {cn:<32} {shown}")
+            except Exception as exc:
+                print("    " + _red(f"✗ row counts unavailable: {exc}"))
+    if not probe and not rows:
+        info("add " + _bold("--probe") + " to check reachability, or "
+             + _bold("--rows") + " to list collections + row counts")
 
 
 def do_backups(args):
