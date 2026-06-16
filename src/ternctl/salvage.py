@@ -12,7 +12,7 @@ Start offset is resolved in priority order:
 
 The checkpoint-file path is RECOMMENDED — it works after force-promote, when the
 live GetReplicateInfo API is unavailable (milvus-io/milvus#50344). Capture the
-file with `ternctl force-promote --salvage-from ...`.
+file with `ternctl force-promote --checkpoint-source ...`.
 
 Ordering: a single pchannel (one Kafka topic, partition 0) is strictly ordered
 by offset. Across pchannels, sort by the `time_tick` field (globally monotonic).
@@ -169,7 +169,7 @@ def get_salvage_checkpoint(new_primary_uri, source_cluster_id, target_pchannel,
 
 def load_checkpoint_file(path, pchannel):
     """Resolve a start offset from a salvage checkpoint JSON produced by
-    `ternctl force-promote --salvage-from`. Matches `pchannel`
+    `ternctl force-promote --checkpoint-source`. Matches `pchannel`
     against each entry's source_pchannel_topic / target_pchannel.
 
     Returns (start_offset, time_tick, source_cluster_id, matched_entry).
@@ -332,7 +332,7 @@ def _salvage_one(args):
             warn(f"GetReplicateInfo failed ({type(e).__name__}) — this is the known "
                  f"post-force-promote breakage (milvus-io/milvus#50344).")
             warn("Prefer the prefetch path: capture a checkpoint at force-promote time "
-                 "with `ternctl force-promote --salvage-from`, then pass it "
+                 "with `ternctl force-promote --checkpoint-source`, then pass it "
                  "here via --checkpoint-file. Falling back to topic earliest.")
             start_offset = 0
     print()

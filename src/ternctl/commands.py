@@ -368,26 +368,26 @@ def do_force_promote(args, target):
 
     # Salvage-source auto-discovery: the standby's own replicate config records
     # its incoming edge — its source IS the (dead) primary whose checkpoint we
-    # must snapshot before the role flips. Opting OUT (--no-salvage) is the
+    # must snapshot before the role flips. Opting OUT (--no-checkpoint) is the
     # explicit action, because skipping the prefetch makes the old primary's
     # in-flight data unrecoverable (see #50344 / HANDOFF §3.2).
-    if not args.salvage_from and not getattr(args, "no_salvage", False):
+    if not args.checkpoint_source and not getattr(args, "no_checkpoint", False):
         if not view_ok:
             warn("salvage-source auto-discovery unavailable (view unreadable) — "
-                 "proceeding WITHOUT prefetch; pass --salvage-from "
+                 "proceeding WITHOUT prefetch; pass --checkpoint-source "
                  "explicitly to capture one")
         if len(sources) == 1:
-            args.salvage_from = sources[0]
+            args.checkpoint_source = sources[0]
             info(f"salvage source auto-discovered from {target.cluster_id}'s "
                  f"replicate config: {_cyan(sources[0])} "
-                 f"(pass --no-salvage to skip the prefetch)")
+                 f"(pass --no-checkpoint to skip the snapshot)")
         elif len(sources) > 1:
             raise RuntimeError(
                 f"{target.cluster_id} has {len(sources)} incoming edges "
                 f"({', '.join(sources)}) — a pathological state, cannot pick a "
                 f"salvage source automatically. Choose explicitly: "
-                f"--salvage-from <{'|'.join(sources)}> to capture one, or "
-                f"--no-salvage to promote WITHOUT salvaging (in-flight data on "
+                f"--checkpoint-source <{'|'.join(sources)}> to capture one, or "
+                f"--no-checkpoint to promote WITHOUT a snapshot (in-flight data on "
                 f"the old primaries becomes unrecoverable). Refusing to skip "
                 f"salvage silently.")
     if not getattr(args, "yes", False):
@@ -399,7 +399,7 @@ def do_force_promote(args, target):
         if ans != "force-promote":
             info("aborted")
             sys.exit(1)
-    do_prefetch = bool(args.salvage_from)
+    do_prefetch = bool(args.checkpoint_source)
     subtitle = (
         f"target: {_cyan(target.cluster_id)} ({target.uri})\n"
         f"{_yel('⚠')} RPO bounded by CDC lag at failure time — NOT zero"
@@ -407,7 +407,7 @@ def do_force_promote(args, target):
     if do_prefetch:
         subtitle += (
             f"\nprefetch salvage checkpoint from source "
-            f"{_cyan(args.salvage_from)} before flipping role"
+            f"{_cyan(args.checkpoint_source)} before flipping role"
         )
     header("FORCE-PROMOTE", subtitle)
 
@@ -419,7 +419,7 @@ def do_force_promote(args, target):
         n_step = "0/1"
         step(n_step, f"snapshot ReplicateCheckpoint for {target.pchannel_num} pchannels")
         pchannels = pchannels_of(target.cluster_id, target.pchannel_num)
-        entries = prefetch_salvage_checkpoints(target, args.salvage_from, pchannels)
+        entries = prefetch_salvage_checkpoints(target, args.checkpoint_source, pchannels)
         ok = sum(1 for e in entries if e.get("status") == "ok")
         salvage_out_path = args.checkpoint_file or os.path.abspath(
             f"salvage_checkpoint_{target.cluster_id}_{int(time.time())}.json")
@@ -434,7 +434,7 @@ def do_force_promote(args, target):
                 "prefetched_at_unix": int(time.time()),
                 "target_cluster_id": target.cluster_id,
                 "target_uri": target.uri,
-                "source_cluster_id": args.salvage_from,
+                "source_cluster_id": args.checkpoint_source,
                 "pchannel_num": target.pchannel_num,
                 "pchannels": entries,
                 "_note": (
@@ -470,8 +470,8 @@ def do_force_promote(args, target):
     kv("new primary", f"{target.cluster_id} ({target.uri})  [INDEPENDENT — no standby]", _green)
     if salvage_out_path:
         kv("salvage snapshot", salvage_out_path, _bold)
-        info(f"recover {args.salvage_from}'s stranded WAL tail, then reconcile it in:")
-        info(f"  {_bold('ternctl salvage --source-cluster ' + args.salvage_from + ' --checkpoint-file ' + os.path.basename(salvage_out_path) + ' --output-dir ./salvage_out')}")
+        info(f"recover {args.checkpoint_source}'s stranded WAL tail, then reconcile it in:")
+        info(f"  {_bold('ternctl salvage --source-cluster ' + args.checkpoint_source + ' --checkpoint-file ' + os.path.basename(salvage_out_path) + ' --output-dir ./salvage_out')}")
         info(f"  {_bold('ternctl replay --from-dir ./salvage_out --into ' + target.cluster_id)}")
     info(f"next: when the old primary recovers, run "
          f"{_bold('ternctl rebuild --upstream ' + target.cluster_id + ' --downstream <old>')} to re-establish a standby")

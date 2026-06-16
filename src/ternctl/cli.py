@@ -150,24 +150,24 @@ def build_parser():
     g.add_argument("--target-inter", default=None, metavar="URI",
                    help="override the target's inter-cluster URI")
     p_force.add_argument("--yes", action="store_true", help="skip the RPO confirmation prompt")
-    sg = p_force.add_argument_group("salvage checkpoint prefetch (recommended for DR)")
-    sg.add_argument("--salvage-from", default=None,
-                    help="cluster id of the OLD primary you may want to salvage data from. "
-                         "When set, the tool snapshots the live ReplicateCheckpoint for every "
-                         "target pchannel BEFORE the force_promote RPC, while GetReplicateInfo "
-                         "still works. After force_promote that API is broken on an independent "
-                         "primary — see milvus-io/milvus#50344. Without this flag, salvage of "
-                         "in-flight messages from the dead primary is not possible.")
+    sg = p_force.add_argument_group("salvage-checkpoint snapshot (recommended for DR)")
+    sg.add_argument("--checkpoint-source", default=None,
+                    help="cluster id of the OLD primary to SNAPSHOT a ReplicateCheckpoint "
+                         "from, for every target pchannel, BEFORE the force_promote RPC "
+                         "(while GetReplicateInfo still works — it breaks on an independent "
+                         "primary, milvus-io/milvus#50344). This only SNAPSHOTS the point; "
+                         "the actual data recovery is a later `ternctl salvage` using the "
+                         "file. Usually auto-discovered from the target's incoming edge; "
+                         "pass it only to disambiguate.")
     sg.add_argument("--checkpoint-file", default=None,
-                    help="output path for the prefetched checkpoint JSON. "
+                    help="where to write the snapshot JSON (the key `ternctl salvage "
+                         "--checkpoint-file` reads later). "
                          "Default: ./salvage_checkpoint_<target>_<unix_ts>.json")
-    sg.add_argument("--no-salvage", action="store_true",
-                    help="skip the salvage-checkpoint prefetch entirely. Without this "
-                         "flag, omitting --salvage-from makes ternctl "
-                         "AUTO-DISCOVER the source from the target's own replicate "
-                         "configuration (its incoming edge) — the prefetch is read-only "
-                         "and skipping it makes the old primary's in-flight data "
-                         "unrecoverable, so opting OUT is the explicit action.")
+    sg.add_argument("--no-checkpoint", action="store_true",
+                    help="skip the checkpoint snapshot entirely. Without this flag the "
+                         "source is AUTO-DISCOVERED from the target's incoming edge — the "
+                         "snapshot is read-only and skipping it makes the old primary's "
+                         "in-flight data unrecoverable, so opting OUT is the explicit action.")
 
     p_status = sub.add_parser("status", help="dump replication checkpoints")
     add_common(p_status, downstream_required=False, upstream_required=False)
@@ -357,7 +357,7 @@ def build_parser():
                                 "(salvage_dml_<i>.jsonl)")
     p_salvage.add_argument("--checkpoint-file", default=None, metavar="PATH",
                            help="salvage checkpoint JSON from `ternctl force-promote "
-                                "--salvage-from`. RECOMMENDED — works after "
+                                "--checkpoint-source`. RECOMMENDED — works after "
                                 "force-promote when live GetReplicateInfo is broken "
                                 "(milvus-io/milvus#50344).")
     p_salvage.add_argument("--from-offset", type=int, default=None,
